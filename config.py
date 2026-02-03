@@ -14,8 +14,8 @@ class Config:
     # Root directories
     project_root = Path(__file__).parent
     
-    # Data paths
-    data_root = Path("C:/Users/Rishabh/Downloads/Data/Bifurcation/results")
+    # Data paths - use project ProcessedData directory
+    data_root = project_root  # Changed to use local project root
     processed_data_dir = project_root / "ProcessedData"
     
     # Output directories
