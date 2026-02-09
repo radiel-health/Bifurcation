@@ -18,7 +18,7 @@ from pathlib import Path
 import json
 import numpy as np
 from typing import Tuple, List, Optional
-from config import config
+from Bifurcation.config import config
 
 
 class BifurcationWSSDataset(Dataset):

@@ -21,12 +21,12 @@ wheels/
 *.egg
 
 # PyTorch
-*.pt
-*.pth
-!best_state_fold_*.pt
+# *.pt
+# *.pth
+# !best_state_fold_*.pt
 
-# Jupyter
-.ipynb_checkpoints
+# # Jupyter
+# .ipynb_checkpoints
 
 # IDEs
 .vscode/
