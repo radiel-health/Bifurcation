@@ -40,13 +40,13 @@ wheels/
 Thumbs.db
 
 # Project-specific
-ProcessedData/
-!ProcessedData/.gitkeep
-Models/*.pt
-!Models/.gitkeep
-results/
-figures/
-*.log
+# ProcessedData/
+# !ProcessedData/.gitkeep
+# Models/*.pt
+# !Models/.gitkeep
+# results/
+# figures/
+# *.log
 
 # Data (stored separately)
 Data/
