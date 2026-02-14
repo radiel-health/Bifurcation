@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg
+*.egg-info/
+
+# Distribution / packaging
+.Python
+build/
+dist/
+wheels/
+
+# Virtual environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE-specific files (uncomment as needed)
+# .idea/  # For PyCharm
+# .vscode/ # For VS Code
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+ProcessedData/*
