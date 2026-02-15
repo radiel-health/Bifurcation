@@ -134,16 +134,12 @@ def train(
     # ---- model ----
     model = BifurcationWSSPredictor(
         node_feat_dim=config.node_feat_dim,
-        edge_channels=config.edge_feat_dim,
-        aggregated_edge_feat_dim=config.aggregated_edge_feat_dim,
-        hidden_gcn_dim=config.hidden_gcn_dim,
+        edge_feat_dim=config.edge_feat_dim,
+        hidden_dim=config.hidden_dim,
         out_channels=config.output_dim,
-        num_gcn_layers=config.num_gcn_layers,
+        num_layers=config.num_layers,
         context_dim=config.context_dim,
         flow_param_dim=config.flow_param_dim,
-        unet_hidden=config.unet_hidden,
-        unet_depth=config.unet_depth,
-        unet_pool_ratio=config.unet_pool_ratio,
     ).to(device)
     get_model_summary(model)
 
@@ -210,9 +206,8 @@ def train(
                         "holdout_geo": holdout_geo,
                         "node_feat_dim": config.node_feat_dim,
                         "edge_feat_dim": config.edge_feat_dim,
-                        "aggregated_edge_feat_dim": config.aggregated_edge_feat_dim,
-                        "hidden_gcn_dim": config.hidden_gcn_dim,
-                        "num_gcn_layers": config.num_gcn_layers,
+                        "hidden_dim": config.hidden_dim,
+                        "num_layers": config.num_layers,
                         "context_dim": config.context_dim,
                         "output_dim": config.output_dim,
                     },

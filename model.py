@@ -1,7 +1,7 @@
 """
 GNN model for bifurcation wall shear stress prediction.
 
-Architecture (adapted from AVFlow Gen 3 + FiLM conditioning):
+Architecture (GINEConv + FiLM conditioning):
 
     flow_params [log10(Re), angle_rad]
         │
@@ -10,15 +10,14 @@ Architecture (adapted from AVFlow Gen 3 + FiLM conditioning):
                          │
                          │ FiLM  γ·h + β
                          ▼
-    node_feat (3) ──┐
-                    ├─► concat (3+16=19) ──► 8× GCNConv+ReLU (512-D) ──► h_geom
-    EdgeUNet(4) ────┘                                                       │
-        ▲                                                                   ▼
-    edge_attr (4)                                                   h_fused = FiLM(h_geom, ctx)
+    node_feat (3) ──► 6× GINEConv+LayerNorm+ReLU+Residual (256-D) ──► h_geom
+        +                                                                   │
+    edge_attr (4)                                                           ▼
+                                                            h_fused = FiLM(h_geom, ctx)
                                                                            │
-                                                                    Linear(512→3) ──► [wss_x, wss_y, wss_z]
+                                                                    Linear(256→3) ──► [wss_x, wss_y, wss_z]
 
-Uses PyG's LineGraph transform for efficient line-graph construction.
+GINEConv natively uses edge features at every layer. No line graph needed.
 
 Usage:
     python -m Bifurcation.model          # smoke-test with dummy data
@@ -27,86 +26,8 @@ Usage:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, MessagePassing, GraphUNet
-from torch_geometric.transforms import LineGraph
+from torch_geometric.nn import GINEConv
 from torch_geometric.data import Data, Batch
-
-
-# ============================================================================
-# Line-graph utility
-# ============================================================================
-
-_line_graph_transform = LineGraph(force_directed=False)
-
-
-def build_line_graph(edge_index: torch.Tensor, num_nodes: int,
-                     device: torch.device = None) -> torch.Tensor:
-    """
-    Build line-graph edge_index using PyG's sparse LineGraph transform.
-
-    In the line graph every *edge* of the original graph becomes a *node*,
-    and two line-graph nodes are connected when their original edges share
-    a vertex.
-    """
-    tmp = Data(edge_index=edge_index, num_nodes=num_nodes)
-    tmp = _line_graph_transform(tmp)
-    ei = tmp.edge_index
-    return ei.to(device) if device is not None else ei
-
-
-# ============================================================================
-# EdgeUNetAggregator  (AVFlow Gen 3)
-# ============================================================================
-
-class EdgeUNetAggregator(MessagePassing):
-    """
-    Process edge features with a Graph-U-Net on the line graph, then
-    aggregate back to nodes via message passing.
-
-    Steps:
-        1. Convert original graph → line graph (edges become nodes)
-        2. Run GraphUNet on line-graph → hierarchically refined edge features
-        3. Project to ``out_node_channels``
-        4. Mean-aggregate edge features arriving at each node
-
-    Args:
-        edge_channels:      input edge-feature dimension (4)
-        out_node_channels:  output per-node dimension      (16)
-        unet_hidden:        GraphUNet hidden channels       (128)
-        unet_depth:         GraphUNet depth                 (4)
-        pool_ratio:         GraphUNet pool ratio            (0.5)
-        aggr:               aggregation mode                ('mean')
-    """
-
-    def __init__(
-        self,
-        edge_channels: int = 4,
-        out_node_channels: int = 16,
-        unet_hidden: int = 128,
-        unet_depth: int = 4,
-        pool_ratio: float = 0.5,
-        aggr: str = "mean",
-    ):
-        super().__init__(aggr=aggr)
-        self.edge_unet = GraphUNet(
-            in_channels=edge_channels,
-            hidden_channels=unet_hidden,
-            out_channels=edge_channels,
-            depth=unet_depth,
-            pool_ratios=pool_ratio,
-        )
-        self.project = nn.Linear(edge_channels, out_node_channels)
-
-    def forward(self, edge_index, edge_attr, num_nodes):
-        lg_edge_index = build_line_graph(edge_index, num_nodes,
-                                         device=edge_index.device)
-        edge_feat = self.edge_unet(edge_attr, lg_edge_index)
-        edge_feat = self.project(edge_feat)
-        return self.propagate(edge_index, size=(num_nodes, num_nodes),
-                              edge_attr=edge_feat)
-
-    def message(self, edge_attr):
-        return edge_attr
 
 
 # ============================================================================
@@ -172,36 +93,29 @@ class BifurcationWSSPredictor(nn.Module):
     vessel geometries.
 
     Combines:
-      - **AVFlow Gen 3** backbone (EdgeUNetAggregator + deep GCN stack)
+      - **GINEConv** backbone (edge-conditioned message passing at every layer)
       - **FiLM** conditioning on flow parameters (Re, bifurcation angle)
+      - **Residual connections** + LayerNorm for training stability
 
     Args:
-        node_feat_dim:            input node feature dim   (3: x,y,z)
-        edge_channels:            input edge feature dim   (4)
-        aggregated_edge_feat_dim: edge aggregator output   (16)
-        hidden_gcn_dim:           GCN hidden width         (512)
-        out_channels:             prediction dim           (3: wss_x,y,z)
-        num_gcn_layers:           number of GCN layers     (8)
-        context_dim:              FiLM context width       (64)
-        flow_param_dim:           flow-encoder input       (2)
-        unet_hidden:              GraphUNet hidden         (128)
-        unet_depth:               GraphUNet depth          (4)
-        unet_pool_ratio:          GraphUNet pool ratio     (0.5)
+        node_feat_dim:      input node feature dim   (3: x,y,z)
+        edge_feat_dim:      input edge feature dim   (4: dist,dx,dy,dz)
+        hidden_dim:         GNN hidden width         (256)
+        out_channels:       prediction dim           (3: wss_x,y,z)
+        num_layers:         number of GINE layers    (6)
+        context_dim:        FiLM context width       (64)
+        flow_param_dim:     flow-encoder input       (2)
     """
 
     def __init__(
         self,
         node_feat_dim: int = 3,
-        edge_channels: int = 4,
-        aggregated_edge_feat_dim: int = 16,
-        hidden_gcn_dim: int = 512,
+        edge_feat_dim: int = 4,
+        hidden_dim: int = 256,
         out_channels: int = 3,
-        num_gcn_layers: int = 8,
+        num_layers: int = 6,
         context_dim: int = 64,
         flow_param_dim: int = 2,
-        unet_hidden: int = 128,
-        unet_depth: int = 4,
-        unet_pool_ratio: float = 0.5,
     ):
         super().__init__()
 
@@ -212,28 +126,37 @@ class BifurcationWSSPredictor(nn.Module):
             output_dim=context_dim,
         )
 
-        # -- edge aggregator --
-        self.edge_aggregator = EdgeUNetAggregator(
-            edge_channels=edge_channels,
-            out_node_channels=aggregated_edge_feat_dim,
-            unet_hidden=unet_hidden,
-            unet_depth=unet_depth,
-            pool_ratio=unet_pool_ratio,
-            aggr="mean",
-        )
+        # -- edge encoder: project 4-D edge features to hidden_dim --
+        self.edge_encoder = nn.Linear(edge_feat_dim, hidden_dim)
 
-        # -- GCN stack (8 layers, bare GCNConv + ReLU, no residuals) --
-        gcn_input_dim = node_feat_dim + aggregated_edge_feat_dim
+        # -- GINE stack with residual connections + LayerNorm --
         self.convs = nn.ModuleList()
-        self.convs.append(GCNConv(gcn_input_dim, hidden_gcn_dim))
-        for _ in range(num_gcn_layers - 1):
-            self.convs.append(GCNConv(hidden_gcn_dim, hidden_gcn_dim))
+        self.norms = nn.ModuleList()
+        
+        # First layer: node_feat_dim → hidden_dim
+        mlp_in = nn.Sequential(
+            nn.Linear(node_feat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.convs.append(GINEConv(nn=mlp_in, edge_dim=hidden_dim, train_eps=True))
+        self.norms.append(nn.LayerNorm(hidden_dim))
+        
+        # Remaining layers: hidden_dim → hidden_dim with residuals
+        for _ in range(num_layers - 1):
+            mlp = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
+            self.convs.append(GINEConv(nn=mlp, edge_dim=hidden_dim, train_eps=True))
+            self.norms.append(nn.LayerNorm(hidden_dim))
 
         # -- FiLM --
-        self.film = FiLMLayer(context_dim=context_dim, feature_dim=hidden_gcn_dim)
+        self.film = FiLMLayer(context_dim=context_dim, feature_dim=hidden_dim)
 
         # -- output head --
-        self.lin = nn.Linear(hidden_gcn_dim, out_channels)
+        self.lin = nn.Linear(hidden_dim, out_channels)
 
     # --------------------------------------------------------------------- #
 
@@ -249,8 +172,7 @@ class BifurcationWSSPredictor(nn.Module):
         """
         x = data.x                       # [N, node_feat_dim]
         edge_index = data.edge_index     # [2, E]
-        edge_attr = data.edge_attr       # [E, edge_channels]
-        num_nodes = data.num_nodes
+        edge_attr = data.edge_attr       # [E, edge_feat_dim]
         batch = data.batch if hasattr(data, "batch") and data.batch is not None \
             else torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
@@ -265,22 +187,25 @@ class BifurcationWSSPredictor(nn.Module):
         # 1. Flow context
         context = self.flow_encoder(flow_params)      # [B, context_dim]
 
-        # 2. Edge aggregation
-        edge_feats = self.edge_aggregator(edge_index, edge_attr, num_nodes)
+        # 2. Encode edge features once
+        edge_attr = self.edge_encoder(edge_attr)      # [E, hidden_dim]
 
-        # 3. Concatenate node features + aggregated edge context
-        x = torch.cat([x, edge_feats], dim=1)
+        # 3. GINE stack with residuals
+        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
+            x_out = conv(x, edge_index, edge_attr)
+            x_out = norm(x_out)
+            x_out = F.relu(x_out)
+            # Add residual connection (skip first layer since dimensions change)
+            if i > 0:
+                x_out = x_out + x
+            x = x_out
 
-        # 4. GCN stack
-        for conv in self.convs:
-            x = F.relu(conv(x, edge_index))
+        h_geom = x  # [N, hidden_dim]
 
-        h_geom = x  # [N, hidden_gcn_dim]
-
-        # 5. FiLM modulation
+        # 4. FiLM modulation
         h_fused = self.film(h_geom, context, batch)
 
-        # 6. Output
+        # 5. Output
         return self.lin(h_fused)                      # [N, 3]
 
 
@@ -299,8 +224,9 @@ def get_model_summary(model: BifurcationWSSPredictor):
 
     components = {
         "Flow Encoder":    model.flow_encoder,
-        "Edge Aggregator": model.edge_aggregator,
-        "GCN Stack":       model.convs,
+        "Edge Encoder":    model.edge_encoder,
+        "GINE Stack":      model.convs,
+        "LayerNorms":      model.norms,
         "FiLM Layer":      model.film,
         "Output Head":     model.lin,
     }

@@ -83,15 +83,9 @@ class Config:
     # MODEL HYPERPARAMETERS
     # =========================================================================
 
-    # EdgeUNetAggregator
-    unet_hidden = 128
-    unet_depth = 4
-    unet_pool_ratio = 0.5
-    aggregated_edge_feat_dim = 16
-
-    # GCN stack
-    hidden_gcn_dim = 512
-    num_gcn_layers = 8
+    # GINE stack
+    hidden_dim = 256           # Hidden dimension for GINEConv layers
+    num_layers = 6             # Number of GINEConv layers
 
     # Flow encoder / FiLM
     context_dim = 64

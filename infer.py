@@ -59,11 +59,10 @@ def load_model(
     cfg = ckpt.get("config", {})
     model = BifurcationWSSPredictor(
         node_feat_dim=cfg.get("node_feat_dim", config.node_feat_dim),
-        edge_channels=cfg.get("edge_feat_dim", config.edge_feat_dim),
-        aggregated_edge_feat_dim=cfg.get("aggregated_edge_feat_dim", config.aggregated_edge_feat_dim),
-        hidden_gcn_dim=cfg.get("hidden_gcn_dim", config.hidden_gcn_dim),
+        edge_feat_dim=cfg.get("edge_feat_dim", config.edge_feat_dim),
+        hidden_dim=cfg.get("hidden_dim", config.hidden_dim),
         out_channels=cfg.get("output_dim", config.output_dim),
-        num_gcn_layers=cfg.get("num_gcn_layers", config.num_gcn_layers),
+        num_layers=cfg.get("num_layers", config.num_layers),
         context_dim=cfg.get("context_dim", config.context_dim),
     )
     model.load_state_dict(ckpt["model_state"])
