@@ -66,7 +66,8 @@ def train_epoch(model, loader, optimizer, device, grad_clip=None,
                 mag_weight=0.0):
     model.train()
     total_loss, n = 0.0, 0
-    for batch in loader:
+    pbar = tqdm(loader, desc="Training", leave=False)
+    for batch in pbar:
         batch = batch.to(device)
         y_pred = model(batch)
         loss = compute_loss(y_pred, batch.y, mag_weight)
@@ -77,6 +78,7 @@ def train_epoch(model, loader, optimizer, device, grad_clip=None,
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
         n += batch.num_graphs
+        pbar.set_postfix({"loss": f"{loss.item():.6f}"})
     return total_loss / max(n, 1)
 
 
@@ -84,12 +86,14 @@ def train_epoch(model, loader, optimizer, device, grad_clip=None,
 def validate_epoch(model, loader, device, mag_weight=0.0):
     model.eval()
     total_loss, n = 0.0, 0
-    for batch in loader:
+    pbar = tqdm(loader, desc="Validation", leave=False)
+    for batch in pbar:
         batch = batch.to(device)
         y_pred = model(batch)
         loss = compute_loss(y_pred, batch.y, mag_weight)
         total_loss += loss.item() * batch.num_graphs
         n += batch.num_graphs
+        pbar.set_postfix({"loss": f"{loss.item():.6f}"})
     return total_loss / max(n, 1)
 
 
@@ -115,7 +119,11 @@ def train(
 
     print(f"\n{'='*70}")
     print(f"Training  |  mode={mode}  holdout={holdout_geo}  epochs={epochs}")
-    print(f"Device: {device}")
+    if torch.cuda.is_available():
+        print(f"Device: {device} ({torch.cuda.get_device_name(0)})")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        print(f"Device: {device}")
     print(f"{'='*70}\n")
 
     # ---- data ----
@@ -142,6 +150,10 @@ def train(
         flow_param_dim=config.flow_param_dim,
     ).to(device)
     get_model_summary(model)
+
+    print(f"\n{'='*70}")
+    print(f"Starting training loop...")
+    print(f"{'='*70}\n")
 
     # ---- optimiser / scheduler ----
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate,
@@ -185,10 +197,17 @@ def train(
         improved = val_loss < best_val
         marker = " *" if improved else ""
 
+        # GPU memory tracking
+        gpu_mem = ""
+        if torch.cuda.is_available():
+            mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+            mem_reserved = torch.cuda.memory_reserved(device) / 1024**3
+            gpu_mem = f"  GPU: {mem_allocated:.2f}/{mem_reserved:.2f}GB"
+
         print(
             f"Epoch {epoch:3d}/{epochs}  "
             f"train={train_loss:.6f}  val={val_loss:.6f}  "
-            f"lr={lr_now:.2e}  {dt:.1f}s{marker}"
+            f"lr={lr_now:.2e}  {dt:.1f}s{marker}{gpu_mem}"
         )
 
         if improved:
