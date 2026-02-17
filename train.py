@@ -34,7 +34,7 @@ from tqdm import tqdm
 # Import from local modules
 from config import config
 from dataset import WSSDataset, get_dataloaders
-from Models.model import WSSPredictor, count_parameters, get_model_summary
+from model import WSSPredictor, count_parameters, get_model_summary
 import torchbnn as bnn
 
 kl_loss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
@@ -343,18 +343,12 @@ def main():
     # Load dataset
     print("Loading dataset...")
     
-    # Get effective batch size (adjusted for top wall filtering)
-    batch_size = config.get_batch_size()
+    batch_size = config.batch_size
     
-    if config.filter_top_wall:
-        print(f"⚠ Top wall filtering ENABLED - training on 3 walls only")
-        print(f"  Batch size adjusted: {config.batch_size} → {batch_size} (compensates for fewer nodes)")
-    
-    # Get dataloaders (they create datasets internally)
+    # Get dataloaders
     train_loader, val_loader, test_loader = get_dataloaders(
         batch_size=batch_size,
-        num_workers=0,  # Windows compatibility
-        filter_top_wall=config.filter_top_wall
+        num_workers=0,
     )
     
     print(f"Dataset loaded")

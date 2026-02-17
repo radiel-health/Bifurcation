@@ -1,17 +1,17 @@
 """
-GNN model architecture for wall shear stress prediction.
+GNN model architecture for wall shear stress prediction (3D point cloud).
 
 Two-stream architecture:
-1. Flow Encoder: MLP([Re, Lx, Ly] → context_dim)
+1. Flow Encoder: MLP([Re] → context_dim)
 2. Geometry Encoder: GCN(node_features → hidden_dim)
 3. FiLM Modulation: Context modulates geometry via γ, β
-4. Task Head: GAT + MLP → WSS predictions
+4. Task Head: GAT + MLP → WSS predictions (3 components: x, y, z)
 
 Key design choices:
-- Ring topology: Each node connects to neighbors along boundary perimeter
+- KNN topology: Each node connects to k-nearest neighbors in 3D space
 - Message passing: 3 GCN layers = 6-hop neighborhood context
 - FiLM fusion: Flow context modulates geometry features multiplicatively
-- Log1p normalization: Handles WSS values spanning 7 orders of magnitude
+- Log1p normalization: Handles WSS values spanning orders of magnitude
 """
 
 import torch
@@ -25,17 +25,17 @@ from math import ceil
 
 class FlowEncoder(nn.Module):
     """
-    Encode flow parameters [Re, Lx, Ly] into context vector.
+    Encode flow parameters [Re] into context vector.
     
     Architecture: 2-layer MLP with ReLU
     
     Args:
-        input_dim: 3 (Re, Lx, Ly)
+        input_dim: 1 (Re only)
         hidden_dim: Hidden layer size
         output_dim: Context vector dimension
     """
     
-    def __init__(self, input_dim=3, hidden_dim=64, output_dim=64):
+    def __init__(self, input_dim=1, hidden_dim=64, output_dim=64):
         super().__init__()
         
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -64,13 +64,13 @@ class GeometryEncoder(nn.Module):
     Architecture: 3 GCN layers with residual connections
     
     Args:
-        input_dim: Node feature dimension (10)
+        input_dim: Node feature dimension (4 for 3D: x, y, z, p)
         hidden_dim: Hidden dimension
         num_layers: Number of GCN layers (default: 3)
         dropout: Dropout rate
     """
     
-    def __init__(self, input_dim=10, hidden_dim=64, num_layers=3, dropout=0.1, heads=4):
+    def __init__(self, input_dim=4, hidden_dim=64, num_layers=3, dropout=0.1, heads=4):
         super().__init__()
         
         # Ensure hidden_dim is divisible by heads to maintain consistent dimensions
@@ -294,11 +294,11 @@ class WSSPredictor(nn.Module):
     
     def __init__(
         self,
-        node_feature_dim=10,
-        flow_param_dim=3,
+        node_feature_dim=4,
+        flow_param_dim=1,
         hidden_dim=64,
         context_dim=64,
-        output_dim=2,
+        output_dim=3,
         num_geom_layers=3,
         num_task_layers=2,
         task_hidden_dim=128,
@@ -344,24 +344,19 @@ class WSSPredictor(nn.Module):
             data: PyG Batch object containing:
                 - x: [num_nodes, node_feature_dim] node features
                 - edge_index: [2, num_edges] edge connectivity
-                - re, lx, ly: [batch_size] individual parameters
+                - flow_params: [batch_size, 1] flow parameters (Re)
                 - batch: [num_nodes] batch assignment
                 
         Returns:
             y_pred: [num_nodes, output_dim] WSS predictions
         """
         # Extract data
-        x = data.x                    # [num_nodes, 10]
+        x = data.x                    # [num_nodes, 4]
         edge_index = data.edge_index  # [2, num_edges]
         batch = data.batch            # [num_nodes]
         
-        # Reconstruct flow_params from individual parameters
-        # re, lx, ly are each [batch_size] after batching
-        flow_params = torch.stack([
-            data.re.float(),  # Convert int to float
-            data.lx,
-            data.ly
-        ], dim=1)  # [batch_size, 3]
+        # Flow parameters from data.flow_params
+        flow_params = data.flow_params  # [batch_size, 1]
         
         # 1. Encode flow context
         context = self.flow_encoder(flow_params)  # [batch_size, context_dim]
@@ -373,7 +368,7 @@ class WSSPredictor(nn.Module):
         h_fused = self.film(h_geom, context, batch)  # [num_nodes, hidden_dim]
         
         # 4. Predict WSS
-        y_pred = self.task_head(h_fused, edge_index, batch)  # [num_nodes, 2]
+        y_pred = self.task_head(h_fused, edge_index, batch)  # [num_nodes, 3]
         
         return y_pred
     
@@ -499,7 +494,8 @@ if __name__ == "__main__":
         y_pred = model(batch)
     
     print(f" Forward pass successful!")
-    print(f"   Input: {batch.num_nodes} nodes (100 + 150)")
+    num_nodes = batch.x.shape[0]
+    print(f"   Input: {num_nodes} nodes (100 + 150)")
     print(f"   Output shape: {y_pred.shape}")
     print(f"   Output range: [{y_pred.min():.6f}, {y_pred.max():.6f}]")
     print()

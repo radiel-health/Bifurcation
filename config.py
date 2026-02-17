@@ -29,101 +29,46 @@ class Config:
     # Data directories
     data_root = repo_root / "Data"  # Raw CFD simulation data
     raw_data_dir = data_root  # CSV files are in results-* subdirectories
-    processed_data_dir = project_root / "ProcessedData"  # Saved PyG graphs
+    processed_data_dir = project_root / "ProcessedData" / "3D"  # Saved PyG graphs (3D)
     
     # Output directories
     checkpoint_dir = project_root / "Models"  # Saved models (existing dir)
     results_dir = project_root / "results"         # Evaluation results
     figures_dir = project_root / "figures"         # Plots and visualizations
     
-    # Raw data subdirectories (actual folder names from Data/)
-    aspect_ratio_folders = {
-        "1x1": "results-1x1-aspect",
-        "1x2": "results-1x2-aspect",
-        "2x1": "results-2x1-aspect",
-    }
-    
     # =========================================================================
     # DOMAIN SPECIFICATIONS - Physics/geometry knowledge
     # =========================================================================
     
-    # Available aspect ratios
-    aspect_ratios = ["1x1", "2x1", "1x2"]
-    
-    # Domain dimensions (Lx, Ly) for each aspect ratio
-    # Update these if your actual domain sizes differ!
-    domain_sizes = {
-        "1x1": {"Lx": 1.0, "Ly": 1.0},
-        "2x1": {"Lx": 2.0, "Ly": 1.0},
-        "1x2": {"Lx": 1.0, "Ly": 2.0},
-    }
-    
-    # Reynolds numbers available in dataset
-    # Re from 100 to 3250 in steps of 50 (64 values total)
-    # IMPORTANT: Skip Re=100,150 for 1x2 aspect ratio (WSS zeros issue)
+    # 3D point cloud data - no aspect ratios
     re_min = 100
     re_max = 3250
     re_step = 50
-    re_values = list(range(re_min, re_max + 1, re_step))  # [100, 150, 200, ..., 3250]
-    
-    # Problematic cases to exclude
-    exclude_cases = {
-        "1x2": [100, 150],  # Stationary walls have 99% WSS zeros at low Re
-    }
-    
-    # Total number of cases (for verification)
-    num_aspect_ratios = len(aspect_ratios)
-    num_re_values = len(re_values)  # 64 Re values
-    total_cases_theoretical = num_aspect_ratios * num_re_values  # 192
-    total_cases_usable = total_cases_theoretical - 2  # 190 (excluding 1x2 Re100, Re150)
+    re_values = list(range(re_min, re_max + 1, re_step))
     
     # =========================================================================
     # FEATURE ENGINEERING
     # =========================================================================
     
-    # CSV column names from Fluent export
-    csv_columns = {
-        'coords': ['x', 'y'],
-        'wss_components': ['wss_mag', 'wss_x', 'wss_y'],
-        'additional': ['p', 'velocity-magnitude', 'x-velocity', 'y-velocity']
-    }
+    # Number of features per node (3D point cloud)
+    # Current features (4 total):
+    # 0: x coordinate
+    # 1: y coordinate
+    # 2: z coordinate
+    # 3: pressure (p)
+    node_feature_dim = 4
     
-    # Number of features per node
-    # Current features (10 total):
-    # 0: x_normalized (x / Lx)
-    # 1: y_normalized (y / Ly)
-    # 2: on_top (binary)
-    # 3: on_bottom (binary)
-    # 4: on_left (binary)
-    # 5: on_right (binary)
-    # 6: arc_length (0 to 1, surface coordinate)
-    # 7: distance_to_nearest_corner (normalized)
-    # 8: wall_type (0=stationary, 1=moving)
-    # 9: local_curvature (0 for flat walls)
-    node_feature_dim = 10
-    
-    # Flow parameters dimension: [Re, Lx, Ly]
-    flow_param_dim = 3
+    # Flow parameters dimension: [Re]
+    flow_param_dim = 1
     
     # Target outputs (WSS components)
-    # Predict both components; magnitude can be derived
-    target_dim = 2  # [x_wss, y_wss]
-    # Or predict all 3: target_dim = 3  # [wss_mag, x_wss, y_wss]
-    predict_components_only = True  # If True, only predict x/y and derive magnitude
-    
-    # Tolerance for wall classification (as fraction of domain size)
-    wall_tolerance = 0.001  # 0.1% of domain size
-    
-    # File naming patterns
-    moving_wall_pattern = "moving_wall_full_Re{re}.csv"
-    stationary_wall_pattern = "stat_walls_full_Re{re}.csv"  # 1x1 uses this
-    stationary_wall_pattern_alt = "stationary_walls_full_Re{re}.csv"  # 1x2, 2x1 use this
+    target_dim = 3  # [wss_x, wss_y, wss_z]
     
     # =========================================================================
     # MODEL ARCHITECTURE
     # =========================================================================
     
-    # Flow encoder (processes [Re, Lx, Ly])
+    # Flow encoder (processes [Re])
     context_dim = 64  # Output dimension of flow context encoder
     
     # Geometry encoder (processes boundary mesh)
@@ -141,20 +86,11 @@ class Config:
     dropout_rate = 0.0  # Dropout between GNN layers (0.0 = no dropout)
     
     # =========================================================================
-    # DATA FILTERING
-    # =========================================================================
-    
-    # Top wall filtering
-    # If True, removes top (moving lid) wall from training/validation/testing
-    # Improves model performance on stationary walls (bottom/left/right)
-    filter_top_wall = True  # Set to True to train on 3 walls only
-    
-    # =========================================================================
     # TRAINING HYPERPARAMETERS
     # =========================================================================
     
     # Optimization
-    batch_size = 8  # Automatically increased to 11 when filter_top_wall=True (compensates for ~25% fewer nodes)
+    batch_size = 8
     learning_rate = 1e-3
     weight_decay = 1e-5  # L2 regularization
     num_epochs = 500
@@ -207,7 +143,7 @@ class Config:
     # For "re_extrap": Test on high Re values
     # test_re_values = [re for re in re_values if re >= 2500]
     
-    # For "ar_transfer": Test on one aspect ratio
+    # For "ar_transfer": Hold out entire aspect ratio for transfer learning
     # test_aspect_ratios = ["1x2"]
     
     # Validation split (from training data)
@@ -285,10 +221,6 @@ class Config:
             self.figures_dir,
         ]
         
-        # Create processed data subdirectories for each aspect ratio
-        for ar in self.aspect_ratios:
-            dirs_to_create.append(self.processed_data_dir / ar)
-        
         for directory in dirs_to_create:
             directory.mkdir(parents=True, exist_ok=True)
     
@@ -304,39 +236,8 @@ class Config:
             return torch.device("cpu")
     
     def get_batch_size(self):
-        """Get effective batch size (adjusted for top wall filtering)"""
-        # Keep batch size the same - the increased batch size was causing
-        # incomplete batches with only 1 sample (BatchNorm fails)
+        """Get batch size"""
         return self.batch_size
-    
-    def get_csv_path(self, aspect_ratio, re_value, wall_type="moving"):
-        """
-        Get path to CSV file for a specific case.
-        
-        Args:
-            aspect_ratio: "1x1", "1x2", or "2x1"
-            re_value: Reynolds number (100-3250)
-            wall_type: "moving" or "stationary"
-        
-        Returns:
-            Path object to CSV file
-        """
-        folder_name = self.aspect_ratio_folders[aspect_ratio]
-        re_dir = f"Re{re_value}"
-        
-        if wall_type == "moving":
-            filename = self.moving_wall_pattern.format(re=re_value)
-        else:
-            # Try both naming conventions
-            filename = self.stationary_wall_pattern.format(re=re_value)
-        
-        return self.data_root / folder_name / re_dir / filename
-    
-    def should_exclude_case(self, aspect_ratio, re_value):
-        """Check if a case should be excluded due to data quality issues"""
-        if aspect_ratio in self.exclude_cases:
-            return re_value in self.exclude_cases[aspect_ratio]
-        return False
     
     def print_summary(self):
         """Print configuration summary"""
@@ -344,14 +245,8 @@ class Config:
         print("CONFIGURATION SUMMARY")
         print("=" * 70)
         print(f"\nDATA:")
-        print(f"  Total cases (theoretical): {self.total_cases_theoretical}")
-        print(f"  Usable cases: {self.total_cases_usable}")
-        print(f"  Aspect ratios: {self.aspect_ratios}")
         print(f"  Re range: {self.re_min} to {self.re_max} (step {self.re_step}, {len(self.re_values)} values)")
-        print(f"  Excluded: 1x2 Re100,150 (WSS zeros)")
-        print(f"  Data location: {self.data_root}")
-        print(f"  Split strategy: {self.split_strategy}")
-        print(f"  Test Re values: {len(self.test_re_values)} cases")
+        print(f"  Data location: {self.processed_data_dir}")
         
         print(f"\nMODEL:")
         print(f"  Node features: {self.node_feature_dim}")
@@ -372,7 +267,7 @@ class Config:
         """String representation"""
         return (
             f"Config(\n"
-            f"  cases={self.total_cases}, "
+            f"  re_values={len(self.re_values)}, "
             f"  hidden_dim={self.hidden_dim}, "
             f"  batch_size={self.batch_size}, "
             f"  lr={self.learning_rate}\n"

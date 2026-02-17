@@ -46,9 +46,8 @@ def create_graph(data_dict, flow_params=None):
     node_features = np.hstack([coords, pressure])
     x = torch.tensor(node_features, dtype=torch.float32)
     
-    # Targets: [WSS_mag, WSS_x, WSS_y, WSS_z]
+    # Targets: [WSS_x, WSS_y, WSS_z]
     y_target = np.column_stack([
-        data_dict['wss_mag'],
         data_dict['wss_x'],
         data_dict['wss_y'],
         data_dict['wss_z']
