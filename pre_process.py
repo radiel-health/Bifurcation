@@ -8,7 +8,7 @@ from torch_geometric.nn import knn_graph
 from torch_geometric.utils import to_undirected
 
 # --- Configuration ---
-INPUT_DIR = "RawData/3D_Meshes"
+INPUT_DIR = "Data/openFoam(1e-3)"
 OUTPUT_DIR = "ProcessedData/3D"
 K_NEIGHBORS = 6
 # ---------------------
@@ -70,31 +70,44 @@ if __name__ == "__main__":
     # 1. Ensure output directory exists
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 2. Get all CSV files in the input directory
-    csv_files = list(Path(INPUT_DIR).glob("*.csv"))
+    # 2. Get all wall_wss.csv files recursively in the input directory
+    csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
     print(f"Found {len(csv_files)} files to process in {INPUT_DIR}")
 
     for csv_path in csv_files:
-        print(f"Processing: {csv_path.name}...", end=" ")
+        print(f"Processing: {csv_path}...", end=" ")
 
         try:
             # 3. Load and Convert
             raw_data = load_boundary_csv(csv_path)
 
-            # Extract Reynolds number or other params from filename if needed
-            # Example: "mesh_Re500.csv" -> 500
-            # TODO: integrate real files here
+            # Extract Reynolds number from parent directory (e.g., Re100 -> 100)
+            re_dir = csv_path.parent.name  # e.g., "Re100"
             re_val = 0.0
-            if "Re" in csv_path.stem:
+            if re_dir.startswith("Re"):
                 try:
-                    re_val = float(csv_path.stem.split("Re")[-1])
+                    re_val = float(re_dir[2:])
                 except ValueError:
                     pass
 
-            graph_data = create_graph(raw_data, flow_params=[re_val])
+            # Extract bifurcation angle from grandparent directory
+            # e.g., "bifurcation_angle30_1000_ascii" -> 30
+            angle_dir = csv_path.parent.parent.name  # e.g., "bifurcation_angle30_1000_ascii"
+            angle_val = 0.0
+            if "angle" in angle_dir:
+                try:
+                    angle_part = angle_dir.split("_")[0].replace("bifurcation_angle", "")
+                    angle_val = float(angle_part)
+                except (ValueError, IndexError):
+                    pass
 
-            # 4. Save the .pt file
-            save_name = csv_path.stem + ".pt"
+            graph_data = create_graph(raw_data, flow_params=[re_val, angle_val])
+
+            # 4. Save the .pt file - preserve folder structure in filename
+            # e.g., bifurcation_angle30_1000_ascii_Re100.pt
+            angle_name = csv_path.parent.parent.name
+            re_name = csv_path.parent.name
+            save_name = f"{angle_name}_{re_name}.pt"
             torch.save(graph_data, os.path.join(OUTPUT_DIR, save_name))
             print("Done.")
 
