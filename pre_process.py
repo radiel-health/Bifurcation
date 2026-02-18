@@ -7,6 +7,8 @@ from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
 from torch_geometric.utils import to_undirected
 import re
+from typing import TypedDict
+import numpy.typing as npt
 
 # --- Configuration ---
 INPUT_DIR = "Data/openFoam(1e-3)"
@@ -15,26 +17,46 @@ K_NEIGHBORS = 6
 # ---------------------
 
 
-def load_boundary_csv(csv_path: Path):
-    """Load boundary data from ANSYS CSV file."""
+class BoundaryData(TypedDict):
+    """Type definition for boundary data."""
+
+    coords: npt.NDArray[np.float32]  # Shape (N, 3)
+    wss_mag: npt.NDArray[np.float32]  # Shape (N,)
+    wss_x: npt.NDArray[np.float32]  # Shape (N,)
+    wss_y: npt.NDArray[np.float32]  # Shape (N,)
+    wss_z: npt.NDArray[np.float32]  # Shape (N,)
+    pressure: npt.NDArray[np.float32]  # Shape (N,)
+
+
+class FlowParams(TypedDict):
+    """Type definitions for flow data"""
+
+    # TODO: some aren't really 'flow parameters' so fix this semantic inconsistency
+    re: np.float32
+    angle: np.float32
+    child_size: np.float32
+
+
+def load_boundary_csv(csv_path: Path) -> BoundaryData:
+    """Load boundary data from CSV file."""
     df = pd.read_csv(csv_path)
     return {
-        "coords": df[["x", "y", "z"]].values,
-        "wss_mag": df["wss_mag"].values,
-        "wss_x": df["wss_x"].values,
-        "wss_y": df["wss_y"].values,
-        "wss_z": df["wss_z"].values,
-        "pressure": df["p"].values,
+        "coords": df[["x", "y", "z"]].to_numpy(dtype=np.float32),
+        "wss_mag": df["wss_mag"].to_numpy(dtype=np.float32),
+        "wss_x": df["wss_x"].to_numpy(dtype=np.float32),
+        "wss_y": df["wss_y"].to_numpy(dtype=np.float32),
+        "wss_z": df["wss_z"].to_numpy(dtype=np.float32),
+        "pressure": df["p"].to_numpy(dtype=np.float32),
     }
 
 
-def create_edges(coords, k: int = 6):
+def create_edges(coords: npt.NDArray[np.float32], k: int = 6):
     """Create generic edge connectivity using K-Nearest Neighbors."""
     pos = torch.tensor(coords, dtype=torch.float32)
     return to_undirected(knn_graph(pos, k=k, loop=False))
 
 
-def create_graph(data_dict, flow_params=None):
+def create_graph(data_dict: BoundaryData, flow_params: FlowParams):
     """Package generic CSV data into PyG Data object."""
     coords = data_dict["coords"]
     num_nodes = len(coords)
@@ -86,22 +108,35 @@ if __name__ == "__main__":
             # ---
             re_dir = csv_path.parent.name  # e.g., "Re100"
             assert re_dir.startswith("Re")
-            re_val = float(re_dir[2:])
+            re_val = np.float32(re_dir[2:])
             # ---
 
             # Extract bifurcation angle from grandparent directory
             # e.g., "bifurcation_angle30_1000_ascii" -> 30
             # ---
-            angle_dir = csv_path.parent.parent.name  # e.g., "bifurcation_angle30_1000_ascii"
-            pattern = r'^bifurcation_angle(?P<angle>\d+)_(?P<value>\d+)_ascii$' # Define the expected pattern
-            match = re.fullmatch(pattern, angle_dir) # Match the pattern
-            assert match, f"Directory name '{angle_dir}' does not match the expected format 'bifurcation_angle{{nat1}}_{{nat2}}_ascii'"
-            angle_val = float(match.group('angle')) # Extract angle value and convert to float
+            angle_dir = (
+                csv_path.parent.parent.name
+            )  # e.g., "bifurcation_angle30_1000_ascii"
+            pattern = r"^bifurcation_angle(?P<angle>\d+)_(?P<child_size>\d+)_ascii$"  # Define the expected pattern
+            match = re.fullmatch(pattern, angle_dir)  # Match the pattern
+            assert (
+                match
+            ), f"Directory name '{angle_dir}' does not match the expected format 'bifurcation_angle{{nat1}}_{{nat2}}_ascii'"
+            angle_val = np.float32(
+                match.group("angle")
+            )  # Extract angle value and convert to float
+            child_size_val = np.float32(match.group("child_size"))
+            # TODO: think about how to better use angle_val and other params
             # ---
 
             # 4. Save the .pt file - preserve folder structure in filename
             # e.g., bifurcation_angle30_1000_ascii_Re100.pt
-            graph_data = create_graph(raw_data, flow_params=[re_val, angle_val])
+            graph_data = create_graph(
+                raw_data,
+                flow_params=FlowParams(
+                    re=re_val, angle=angle_val, child_size=child_size_val
+                ),
+            )
             angle_name = csv_path.parent.parent.name
             re_name = csv_path.parent.name
             save_name = f"{angle_name}_{re_name}.pt"
