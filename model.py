@@ -25,12 +25,12 @@ from math import ceil
 
 class FlowEncoder(nn.Module):
     """
-    Encode flow parameters [Re] into context vector.
+    Encode flow parameters [Re, angle, child_size] into context vector.
     
     Architecture: 2-layer MLP with ReLU
     
     Args:
-        input_dim: 1 (Re only)
+        input_dim: 3 (Re, angle, child_size)
         hidden_dim: Hidden layer size
         output_dim: Context vector dimension
     """

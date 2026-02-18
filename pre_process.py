@@ -74,7 +74,7 @@ def create_graph(data_dict: BoundaryData, flow_params: FlowParams):
     )
 
     fp = torch.tensor(
-        [flow_params["re"], flow_params["angle"], flow_params["child_size"]],
+        [[flow_params["re"], flow_params["angle"], flow_params["child_size"]]],
         dtype=torch.float32,
     )
 

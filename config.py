@@ -58,8 +58,8 @@ class Config:
     # 3: pressure (p)
     node_feature_dim = 4
     
-    # Flow parameters dimension: [Re]
-    flow_param_dim = 1
+    # Flow parameters dimension: [Re, angle, child_size]
+    flow_param_dim = 3
     
     # Target outputs (WSS components)
     target_dim = 3  # [wss_x, wss_y, wss_z]
