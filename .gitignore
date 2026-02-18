@@ -45,4 +45,5 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
-ProcessedData/*
+ProcessedData/
+Data/
