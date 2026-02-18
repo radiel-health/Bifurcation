@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
+from torch_geometric.utils import to_undirected
 
 # --- Configuration ---
 INPUT_DIR = "RawData/3D_Meshes"
@@ -13,7 +14,7 @@ K_NEIGHBORS = 6
 # ---------------------
 
 
-def load_boundary_csv(csv_path):
+def load_boundary_csv(csv_path: Path):
     """Load boundary data from ANSYS CSV file."""
     df = pd.read_csv(csv_path)
     return {
@@ -21,20 +22,15 @@ def load_boundary_csv(csv_path):
         "wss_mag": df["wss_mag"].values,
         "wss_x": df["wss_x"].values,
         "wss_y": df["wss_y"].values,
-        "wss_z": df.get("wss_z", np.zeros_like(df["x"])).values,
+        "wss_z": df["wss_z"].values,
         "pressure": df["p"].values,
     }
 
 
-def create_edges(coords, k=6):
+def create_edges(coords, k: int = 6):
     """Create generic edge connectivity using K-Nearest Neighbors."""
     pos = torch.tensor(coords, dtype=torch.float32)
-    edge_index = knn_graph(pos, k=k, loop=False)
-
-    # Make undirected and remove duplicates
-    edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
-    edge_index = torch.unique(edge_index, dim=1)
-    return edge_index
+    return to_undirected(knn_graph(pos, k=k, loop=False))
 
 
 def create_graph(data_dict, flow_params=None):
@@ -87,6 +83,7 @@ if __name__ == "__main__":
 
             # Extract Reynolds number or other params from filename if needed
             # Example: "mesh_Re500.csv" -> 500
+            # TODO: integrate real files here
             re_val = 0.0
             if "Re" in csv_path.stem:
                 try:
