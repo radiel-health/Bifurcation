@@ -6,6 +6,7 @@ from pathlib import Path
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
 from torch_geometric.utils import to_undirected
+import re
 
 # --- Configuration ---
 INPUT_DIR = "Data/openFoam(1e-3)"
@@ -82,29 +83,25 @@ if __name__ == "__main__":
             raw_data = load_boundary_csv(csv_path)
 
             # Extract Reynolds number from parent directory (e.g., Re100 -> 100)
+            # ---
             re_dir = csv_path.parent.name  # e.g., "Re100"
-            re_val = 0.0
-            if re_dir.startswith("Re"):
-                try:
-                    re_val = float(re_dir[2:])
-                except ValueError:
-                    pass
+            assert re_dir.startswith("Re")
+            re_val = float(re_dir[2:])
+            # ---
 
             # Extract bifurcation angle from grandparent directory
             # e.g., "bifurcation_angle30_1000_ascii" -> 30
+            # ---
             angle_dir = csv_path.parent.parent.name  # e.g., "bifurcation_angle30_1000_ascii"
-            angle_val = 0.0
-            if "angle" in angle_dir:
-                try:
-                    angle_part = angle_dir.split("_")[0].replace("bifurcation_angle", "")
-                    angle_val = float(angle_part)
-                except (ValueError, IndexError):
-                    pass
-
-            graph_data = create_graph(raw_data, flow_params=[re_val, angle_val])
+            pattern = r'^bifurcation_angle(?P<angle>\d+)_(?P<value>\d+)_ascii$' # Define the expected pattern
+            match = re.fullmatch(pattern, angle_dir) # Match the pattern
+            assert match, f"Directory name '{angle_dir}' does not match the expected format 'bifurcation_angle{{nat1}}_{{nat2}}_ascii'"
+            angle_val = float(match.group('angle')) # Extract angle value and convert to float
+            # ---
 
             # 4. Save the .pt file - preserve folder structure in filename
             # e.g., bifurcation_angle30_1000_ascii_Re100.pt
+            graph_data = create_graph(raw_data, flow_params=[re_val, angle_val])
             angle_name = csv_path.parent.parent.name
             re_name = csv_path.parent.name
             save_name = f"{angle_name}_{re_name}.pt"
