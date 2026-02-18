@@ -73,10 +73,9 @@ def create_graph(data_dict: BoundaryData, flow_params: FlowParams):
         [data_dict["wss_x"], data_dict["wss_y"], data_dict["wss_z"]]
     )
 
-    fp = (
-        torch.tensor(flow_params, dtype=torch.float32)
-        if flow_params
-        else torch.tensor([0.0])
+    fp = torch.tensor(
+        [flow_params["re"], flow_params["angle"], flow_params["child_size"]],
+        dtype=torch.float32,
     )
 
     return Data(
