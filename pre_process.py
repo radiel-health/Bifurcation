@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 import torch
 import os
+import zipfile
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
@@ -9,13 +13,15 @@ from torch_geometric.utils import to_undirected
 import re
 from typing import TypedDict
 import numpy.typing as npt
+import gdown
+from config import config
 
 # --- Configuration ---
-INPUT_DIR = "Data/openFoam(1e-3)"
 OUTPUT_DIR = "ProcessedData/3D"
 K_NEIGHBORS = 6
+INPUT_DIR = config.input_data_dir
+GOOGLE_DRIVE_ZIP_URL = config.google_drive_zip_url
 # ---------------------
-
 
 class BoundaryData(TypedDict):
     """Type definition for boundary data."""
@@ -35,6 +41,53 @@ class FlowParams(TypedDict):
     re: np.float32
     angle: np.float32
     child_size: np.float32
+
+
+def download_and_extract_data():
+    """Download data from Google Drive and extract to the current directory."""
+    # We extract to "." because the zip contains a "Data/" folder.
+    # This ensures the final path is ./Data/...
+    extract_path = "." 
+    
+    print(f"Downloading data from Google Drive...")
+    
+    try:
+        # gdown handles the 'large file' confirmation automatically.
+        # fuzzy=True helps it find the ID even from a full URL.
+        zip_path = gdown.download(GOOGLE_DRIVE_ZIP_URL, quiet=False, fuzzy=True)
+
+        if not zip_path or not zipfile.is_zipfile(zip_path):
+            raise RuntimeError("Downloaded file is not a valid zip. Check the File ID/URL.")
+
+        print("Download complete. Extracting...")
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Extracting to '.' merges the zip's 'Data/' folder 
+            # with your current working directory.
+            zip_ref.extractall(extract_path)
+        
+        print(f"Data successfully extracted to {os.path.join(os.getcwd(), 'Data')}")
+        
+        # Clean up the temporary zip file
+        os.remove(zip_path)
+        print("Cleaned up temporary zip file.")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
+
+
+def check_and_download_data():
+    """Check if INPUT_DIR has data, download if empty."""
+    csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
+
+    if not csv_files:
+        download_and_extract_data()
+
+        csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
+        assert len(csv_files) > 0, "INPUT_DIR is still empty after downloading data"
+
+    print(f"Found {len(csv_files)} data files in {INPUT_DIR}")
 
 
 def load_boundary_csv(csv_path: Path) -> BoundaryData:
@@ -89,7 +142,8 @@ def create_graph(data_dict: BoundaryData, flow_params: FlowParams):
 
 
 if __name__ == "__main__":
-    # 1. Ensure output directory exists
+    check_and_download_data()
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # 2. Get all wall_wss.csv files recursively in the input directory

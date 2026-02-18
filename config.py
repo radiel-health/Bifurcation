@@ -30,6 +30,10 @@ class Config:
     data_root = repo_root / "Data"  # Raw CFD simulation data
     raw_data_dir = data_root  # CSV files are in results-* subdirectories
     processed_data_dir = project_root / "ProcessedData" / "3D"  # Saved PyG graphs (3D)
+    input_data_dir = project_root / "Data" / "openFoam(1e-3)"  # Raw CFD input data
+    
+    # Google Drive download URL for data zip
+    google_drive_zip_url = "https://drive.google.com/uc?export=download&id=1h66tx2eT9lZk1wWf3IeEpBBMs7xq-Wth"
     
     # Output directories
     checkpoint_dir = project_root / "Models"  # Saved models (existing dir)

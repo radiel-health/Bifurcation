@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 import time
 import json
+import subprocess
+import glob
 
 import torch
 import torch.nn as nn
@@ -323,8 +325,44 @@ def train_model(
     return history
 
 
+def ensure_processed_data_exists():
+    """Check if processed data exists, run preprocessing if not."""
+    processed_dir = config.processed_data_dir
+    
+    # Check if directory exists and has .pt files
+    pt_files = list(processed_dir.glob("*.pt")) if processed_dir.exists() else []
+    
+    if not pt_files:
+        print(f"ProcessedData/3D is empty. Running pre_process.py...")
+        
+        # Run pre_process.py
+        result = subprocess.run(
+            [sys.executable, "pre_process.py"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print(f"pre_process.py failed with error:\n{result.stderr}")
+            sys.exit(1)
+        
+        print(result.stdout)
+        
+        # Check again for .pt files
+        pt_files = list(processed_dir.glob("*.pt")) if processed_dir.exists() else []
+    
+    # Assert that processed data exists
+    assert len(pt_files) > 0, (
+        "ProcessedData/3D was empty and tried running pre_process.py and it was still empty"
+    )
+    
+    print(f"✓ Found {len(pt_files)} processed data files")
+
+
 def main():
     """Main training script."""
+    # Check if processed data exists, run preprocessing if needed
+    ensure_processed_data_exists()
     
     print("\n" + "=" * 80)
     print("WALL SHEAR STRESS PREDICTION - TRAINING")
