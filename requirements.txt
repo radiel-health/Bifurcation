@@ -1,0 +1,19 @@
+# Core ML dependencies (already installed in your environment)
+torch
+torch-geometric
+
+# Mesh / CFD
+pyvista
+vtk
+
+# Data
+numpy
+scipy
+pandas
+
+# Visualization
+matplotlib
+
+# REST API (Phase 1: AIP integration)
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
