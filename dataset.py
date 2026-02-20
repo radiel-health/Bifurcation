@@ -62,7 +62,7 @@ class WSSDataset(Dataset[Data]):
         rootPath: Path | None = (
             Config().repo_root / "Bifurcation" if root is None else Path(root)
         )
-        self.data_dir = rootPath / "ProcessedData" / "3D"
+        self.data_dir = rootPath / "ProcessedData"
 
         self.stats_file = self.data_dir / "normalization_stats.json"
 
@@ -71,7 +71,7 @@ class WSSDataset(Dataset[Data]):
         assert abs(sum(split_ratios) - 1.0) < 1e-6, f"Split ratios must sum to 1.0"
 
         # Get all .pt files
-        self.all_files = sorted(list(self.data_dir.glob("*.pt")))
+        self.all_files = sorted(list(self.data_dir.rglob("*.pt")))
 
         print(f"\nFound {len(self.all_files)} preprocessed graphs in {self.data_dir}")
 

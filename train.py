@@ -330,7 +330,7 @@ def ensure_processed_data_exists():
     processed_dir = config.processed_data_dir
     
     # Check if directory exists and has .pt files
-    pt_files = list(processed_dir.glob("*.pt")) if processed_dir.exists() else []
+    pt_files = list(processed_dir.rglob("*.pt")) if processed_dir.exists() else []
     
     if not pt_files:
         print(f"ProcessedData/3D is empty. Running pre_process.py...")
@@ -349,7 +349,7 @@ def ensure_processed_data_exists():
         print(result.stdout)
         
         # Check again for .pt files
-        pt_files = list(processed_dir.glob("*.pt")) if processed_dir.exists() else []
+        pt_files = list(processed_dir.rglob("*.pt")) if processed_dir.exists() else []
     
     # Assert that processed data exists
     assert len(pt_files) > 0, (
