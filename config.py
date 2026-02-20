@@ -118,6 +118,30 @@ class Config:
     use_log_transform = True   # sign-preserving log1p for WSS targets
 
     # =========================================================================
+    # VISUALIZATION
+    # =========================================================================
+
+    # Junction detection - apex only (bifurcation point)
+    curvature_percentile = 85           # Threshold for high-curvature detection
+    min_junction_cluster_size = 50      # Minimum cell count per junction
+    min_junction_surface_area = 1e-6    # Filter out tiny regions
+    max_junction_aspect_ratio = 3.0     # Avoid elongated streaks
+    use_spatial_clustering = True       # Use DBSCAN for robust clustering
+    dbscan_eps = 0.003                  # Spatial proximity threshold
+
+    # Visualization settings
+    junction_highlight_color = "red"
+    junction_zoom_factor = 1.5
+    annotation_font_size = 12
+
+    # Export options
+    include_point_data = True           # Interpolate WSS to vertices for glyphs
+    include_curvature_field = True      # Export curvature diagnostic
+
+    # Optional paths
+    junction_points_file = None         # Override with JSON path
+
+    # =========================================================================
     # HELPERS
     # =========================================================================
 

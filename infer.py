@@ -23,6 +23,7 @@ Usage:
 import argparse
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -258,6 +259,12 @@ def main():
                         help="Output directory (default: predictions/)")
     parser.add_argument("--paraview", action="store_true",
                         help="Export full ParaView case (not just CSV)")
+    parser.add_argument("--export-vtp", action="store_true",
+                        help="Export VTP with junction metadata")
+    parser.add_argument("--junction-file", type=str, default=None,
+                        help="User junction JSON override")
+    parser.add_argument("--launch-paraview", action="store_true",
+                        help="Auto-run ParaView script (requires --export-vtp)")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -313,6 +320,70 @@ def main():
                 w.writerow(["x", "y", "z", "wss_x", "wss_y", "wss_z", "wss_magnitude"])
                 for c, wv, m in zip(coords, wss_pred, mag):
                     w.writerow([*c, *wv, m])
+
+        # VTP export with junction detection
+        if args.export_vtp:
+            from Bifurcation import visualize
+
+            geo_path = str(config.get_geometry_path(geo))
+
+            # Build surface mesh
+            polydata = visualize.build_wall_polydata(geo_path, config.mesh_re)
+
+            # Detect or load junctions
+            if args.junction_file:
+                user_specs = visualize.load_user_junctions(args.junction_file)
+                junctions = visualize.apply_user_junctions(polydata, user_specs)
+            else:
+                junctions = visualize.detect_junctions_curvature(polydata)
+
+            # Export VTP
+            case_dir.mkdir(parents=True, exist_ok=True)
+            vtp_path = case_dir / "prediction.vtp"
+            visualize.export_vtp(polydata, wss_pred, junctions, str(vtp_path))
+
+            # Also export OpenFOAM with junction metadata if --paraview is set
+            if args.paraview:
+                visualize.export_openfoam_with_junctions(
+                    wss_pred, junctions, geo, str(case_dir), config.mesh_re
+                )
+
+            # Launch ParaView script if requested
+            if args.launch_paraview:
+                script_path = Path(__file__).parent / "paraview_junction_view.py"
+                screenshot_path = case_dir / "junction_view.png"
+                state_path = case_dir / "junction_view.pvsm"
+
+                print(f"\n    Launching ParaView script...")
+
+                # Try to find pvpython executable
+                pvpython_cmd = "pvpython"
+                try:
+                    subprocess.run([pvpython_cmd, "--version"],
+                                 capture_output=True, check=True)
+                except FileNotFoundError:
+                    # Try common Windows installation path
+                    common_path = Path("C:/Program Files/ParaView 5.13.3/bin/pvpython.exe")
+                    if common_path.exists():
+                        pvpython_cmd = str(common_path)
+                        print(f"    Using ParaView from: {pvpython_cmd}")
+                    else:
+                        print("    WARNING: pvpython not found. Install ParaView or add it to PATH")
+                        print(f"    VTP file ready at: {vtp_path}")
+                        print(f"    Open manually in ParaView and use Threshold filter (junction_id >= 1)")
+                        continue
+
+                try:
+                    subprocess.run([
+                        pvpython_cmd,
+                        str(script_path),
+                        str(vtp_path),
+                        "--screenshot", str(screenshot_path),
+                        "--state", str(state_path),
+                    ], check=True)
+                    print(f"    ParaView outputs saved to {case_dir}/")
+                except subprocess.CalledProcessError as e:
+                    print(f"    WARNING: ParaView script failed: {e}")
 
         print("done")
 

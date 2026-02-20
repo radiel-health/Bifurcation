@@ -116,7 +116,8 @@ def load_sample(
     geometry_path: str,
     re_case: str,
     mesh_re: str = "Re100",
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Dict]:
+    return_surface_mesh: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Dict, Optional[Tuple]]:
     """
     Load a single training sample as graph components.
 
@@ -128,6 +129,8 @@ def load_sample(
         Reynolds-number subfolder, e.g. ``Re500``
     mesh_re : str
         Which Re subfolder stores the mesh (default ``Re100``)
+    return_surface_mesh : bool
+        If True, return raw surface mesh data as 7th element
 
     Returns
     -------
@@ -137,6 +140,11 @@ def load_sample(
     edge_attr   : (E, 4)        [distance, dx, dy, dz]
     re_number   : float
     boundary    : dict           parsed boundary info (needed for export)
+    surface_mesh : Optional[Tuple]  (points, wall_face_vertices, wall_face_indices)
+        Only returned if return_surface_mesh=True
+        points: (N_total_points, 3) all mesh vertices
+        wall_face_vertices: List[List[int]] vertex indices for each wall face
+        wall_face_indices: List[int] global face IDs
     """
     geometry_path = Path(geometry_path)
 
@@ -218,7 +226,13 @@ def load_sample(
     # ---- Reynolds number ----
     re_number = float(re_case.replace("Re", ""))
 
-    return wall_centres_arr, wall_wss, edge_index, edge_attr, re_number, boundary
+    # ---- optionally return raw surface mesh for visualization ----
+    if return_surface_mesh:
+        wall_face_vertices = [faces[i] for i in wall_face_indices]
+        surface_mesh_data = (points, wall_face_vertices, wall_face_indices)
+        return wall_centres_arr, wall_wss, edge_index, edge_attr, re_number, boundary, surface_mesh_data
+    else:
+        return wall_centres_arr, wall_wss, edge_index, edge_attr, re_number, boundary
 
 
 def sample_to_pyg(
