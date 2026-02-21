@@ -94,7 +94,8 @@ class Config:
     # =========================================================================
     
     # Optimization
-    batch_size = 8
+    batch_size = 2
+    monte_carlo_sims = 10  # MC samples for Bayesian MLP (default 100 is too memory-heavy)
     learning_rate = 1e-3
     weight_decay = 1e-5  # L2 regularization
     num_epochs = 500

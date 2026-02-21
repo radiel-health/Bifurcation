@@ -302,7 +302,8 @@ class WSSPredictor(nn.Module):
         num_geom_layers=3,
         num_task_layers=2,
         task_hidden_dim=128,
-        dropout=0.1
+        dropout=0.1,
+        monte_carlo_sims=10,
     ):
         super().__init__()
         
@@ -333,7 +334,8 @@ class WSSPredictor(nn.Module):
             hidden_dim=task_hidden_dim,
             output_dim=output_dim,
             num_layers=num_task_layers,
-            dropout=dropout
+            dropout=dropout,
+            monte_carlo_sims=monte_carlo_sims,
         )
     
     def forward(self, data):

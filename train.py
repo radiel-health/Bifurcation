@@ -61,7 +61,8 @@ def create_model(device):
         num_geom_layers=config.num_geom_layers,
         num_task_layers=config.num_task_layers,
         task_hidden_dim=config.task_hidden_dim,
-        dropout=config.dropout_rate
+        dropout=config.dropout_rate,
+        monte_carlo_sims=config.monte_carlo_sims,
     )
     
     return model.to(device)
@@ -113,7 +114,7 @@ def train_epoch(model, loader, optimizer, device, grad_clip=None, scaler=None):
 
         # Forward pass (with optional AMP)
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 y_pred = model(batch)
                 loss = (1-kl_weight)*compute_loss(y_pred, batch.y) + kl_weight*kl_loss(model)
         else:
@@ -261,7 +262,7 @@ def train_model(
         'lr': [],
     }
 
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None
 
     print("\n" + "=" * 80)
     print("TRAINING")
