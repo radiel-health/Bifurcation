@@ -1,0 +1,92 @@
+; ===========================================================
+; 3D BIFURCATION TEMPLATE (BASE-CASE SWEEP)
+; Target: ANSYS Fluent 2025 R2 (25.2)
+; Purpose:
+;   - Load a pre-configured base case (materials + zones already correct)
+;   - Sweep inlet velocity / iterations
+;   - Export CSVs + per-Re mesh_for_ml.msh
+; ===========================================================
+
+/file/set-tui-version "25.2"
+
+; Batch options:
+; overwrite files? yes
+; hide questions?  no   (keep prompts visible while validating)
+; exit on error?   yes
+/file/set-batch-options yes no yes
+
+; ===========================================================
+; 1) LOAD BASE CASE (in the same folder as this journal)
+;    base_setup.cas.h5 must already contain:
+;      - fluid_domain material assigned to water/water-liquid
+;      - BC types: inlet velocity-inlet, outlets pressure-outlet, wall wall
+;      - laminar model (or we set it below)
+; ===========================================================
+/file/read-case-data "base_setup.cas.h5"
+
+; Optional: quick mesh sanity check (safe in batch)
+/mesh/check-mesh
+
+; ===========================================================
+; 2) MODELS (safe to re-assert)
+; ===========================================================
+/define/models/solver/pressure-based yes
+/define/models/viscous/laminar yes
+
+; ===========================================================
+; 3) BOUNDARY CONDITIONS (update inlet velocity only)
+; ===========================================================
+/define/boundary-conditions/velocity-inlet inlet
+no
+no
+yes
+yes
+no
+VALUE_VELOCITY
+no
+0
+
+; ===========================================================
+; 4) SOLUTION METHODS / CONTROLS
+; ===========================================================
+/solve/set/p-v-coupling 24
+/solve/set/discretization-scheme/pressure 12
+/solve/set/discretization-scheme/mom 4
+
+/solve/monitors/residual/convergence-criteria 1e-5 1e-6 1e-6 1e-6
+/solve/monitors/residual/print? yes
+
+; ===========================================================
+; 5) INITIALIZATION + SOLVE
+; ===========================================================
+/solve/initialize/compute-defaults/velocity-inlet inlet
+/solve/initialize/initialize-flow
+
+/solve/iterate VALUE_ITERS
+
+; ===========================================================
+; 6) EXPORTS
+; ===========================================================
+
+; Create surface from interior zone for export
+/surface/zone-surface interior-data fluid_domain
+
+; 6A) Write a mesh snapshot for ML in the SAME Re folder
+/file/write-mesh "results/MESH_NAME/ReVALUE_RE/mesh_for_ml.msh"
+
+; 6B) Save case and data for this run
+/file/write-case-data "results/MESH_NAME/ReVALUE_RE/bifurcation_ReVALUE_RE.cas.h5"
+
+; 6C) Export interior field data
+/file/export/ascii "results/MESH_NAME/ReVALUE_RE/interior_full_ReVALUE_RE.csv" interior-data () no x-coordinate y-coordinate z-coordinate pressure x-velocity y-velocity z-velocity velocity-magnitude ()
+no
+
+; 6D) Export wall data
+/file/export/ascii "results/MESH_NAME/ReVALUE_RE/wall_data_ReVALUE_RE.csv" wall-fluid_domain () no x-coordinate y-coordinate z-coordinate pressure wall-shear x-wall-shear y-wall-shear z-wall-shear ()
+no
+
+; 6E) Export outlet data
+/file/export/ascii "results/MESH_NAME/ReVALUE_RE/outlets_ReVALUE_RE.csv" outlet_1 outlet_2 () no x-coordinate y-coordinate z-coordinate pressure velocity-magnitude ()
+no
+
+/exit yes
