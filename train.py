@@ -88,47 +88,58 @@ def compute_loss(y_pred, y_true, reduction='mean'):
     return loss
 
 
-def train_epoch(model, loader, optimizer, device, grad_clip=None):
+def train_epoch(model, loader, optimizer, device, grad_clip=None, scaler=None):
     """
     Train for one epoch.
-    
+
     Args:
         model: WSSPredictor instance
         loader: DataLoader for training data
         optimizer: Optimizer instance
         device: torch device
         grad_clip: Gradient clipping value (None to disable)
-        
+        scaler: GradScaler for AMP (None to disable)
+
     Returns:
         avg_loss: Average loss over epoch
     """
     model.train()
     total_loss = 0
     num_samples = 0
-    
-    for batch in loader:
+
+    pbar = tqdm(loader, desc="  train", leave=False, unit="batch")
+    for batch in pbar:
         batch = batch.to(device)
-        
-        # Forward pass
-        y_pred = model(batch)
-        
-        # Compute loss
-        loss = (1-kl_weight)*compute_loss(y_pred, batch.y) + kl_weight*kl_loss(model)
-        
+
+        # Forward pass (with optional AMP)
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                y_pred = model(batch)
+                loss = (1-kl_weight)*compute_loss(y_pred, batch.y) + kl_weight*kl_loss(model)
+        else:
+            y_pred = model(batch)
+            loss = (1-kl_weight)*compute_loss(y_pred, batch.y) + kl_weight*kl_loss(model)
+
         # Backward pass
         optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        
-        optimizer.step()
-        
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            if grad_clip is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+
         # Accumulate loss
         total_loss += loss.item() * batch.num_graphs
         num_samples += batch.num_graphs
-    
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
+
     avg_loss = total_loss / num_samples
     return avg_loss
 
@@ -221,6 +232,7 @@ def train_model(
     early_stop_patience=20,
     grad_clip=1.0,
     save_best_only=True,
+    use_amp=False,
 ):
     """
     Full training loop with validation, checkpointing, and early stopping.
@@ -248,11 +260,14 @@ def train_model(
         'val_loss': [],
         'lr': [],
     }
-    
+
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+
     print("\n" + "=" * 80)
     print("TRAINING")
     print("=" * 80)
     print(f"Device: {device}")
+    print(f"Mixed precision (AMP): {use_amp}")
     print(f"Train batches: {len(train_loader)}")
     print(f"Val batches: {len(val_loader)}")
     print(f"Epochs: {num_epochs}")
@@ -260,29 +275,36 @@ def train_model(
     print("=" * 80 + "\n")
     
     start_time = time.time()
-    
-    for epoch in range(1, num_epochs + 1):
+    epoch_pbar = tqdm(range(1, num_epochs + 1), desc="Epochs", unit="epoch")
+
+    for epoch in epoch_pbar:
         epoch_start = time.time()
-        
+
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, device, grad_clip)
-        
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_clip, scaler)
+
         # Validate
         val_loss = validate_epoch(model, val_loader, device)
-        
+
         # Learning rate scheduling
         if scheduler is not None:
             scheduler.step(val_loss)
-        
+
         current_lr = optimizer.param_groups[0]['lr']
-        
+
         # Update history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['lr'].append(current_lr)
-        
-        # Print progress
+
+        # Update epoch bar
         epoch_time = time.time() - epoch_start
+        epoch_pbar.set_postfix(
+            train=f"{train_loss:.4f}",
+            val=f"{val_loss:.4f}",
+            lr=f"{current_lr:.1e}",
+            t=f"{epoch_time:.1f}s"
+        )
         print(f"Epoch {epoch:3d}/{num_epochs} | "
               f"Train Loss: {train_loss:.6f} | "
               f"Val Loss: {val_loss:.6f} | "
@@ -437,6 +459,7 @@ def main():
         early_stop_patience=config.early_stop_patience if config.use_early_stopping else None,
         grad_clip=config.grad_clip_value if config.use_grad_clip else None,
         save_best_only=config.save_best_only,
+        use_amp=config.use_amp,
     )
     
     # Save training history

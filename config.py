@@ -197,7 +197,7 @@ class Config:
     num_workers = 0  # Set to 0 to avoid multiprocessing issues, increase if data loading is slow
     
     # Mixed precision training (faster on newer GPUs)
-    use_amp = False  # Automatic Mixed Precision
+    use_amp = True  # Automatic Mixed Precision
     
     # Random seed for reproducibility
     random_seed = 42
