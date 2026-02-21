@@ -160,6 +160,7 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
+        drop_last=True,
         pin_memory=True if torch.cuda.is_available() else False,
     )
 
