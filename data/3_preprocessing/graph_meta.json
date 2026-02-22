@@ -1,0 +1,81 @@
+{
+  "input_mesh": "C:\\Users\\radie\\Desktop\\preprocessing\\flntgz-233324.msh",
+  "node_total_start": 1,
+  "node_total_end": 211243,
+  "n_nodes": 211243,
+  "node_blocks": [
+    {
+      "line": 19,
+      "zone": 13,
+      "start": 1,
+      "end": 24258,
+      "type": 2,
+      "dim": 3
+    },
+    {
+      "line": 24279,
+      "zone": 3023,
+      "start": 24259,
+      "end": 54364,
+      "type": 2,
+      "dim": 3
+    },
+    {
+      "line": 54387,
+      "zone": 3118,
+      "start": 54365,
+      "end": 211243,
+      "type": 1,
+      "dim": 3
+    }
+  ],
+  "face_blocks": [
+    {
+      "line": 244872,
+      "zone": 13,
+      "start": 1,
+      "end": 57325,
+      "type": 3,
+      "etype": 3
+    },
+    {
+      "line": 302199,
+      "zone": 14,
+      "start": 57326,
+      "end": 58356,
+      "type": 10,
+      "etype": 0
+    },
+    {
+      "line": 303232,
+      "zone": 15,
+      "start": 58357,
+      "end": 59065,
+      "type": 5,
+      "etype": 0
+    },
+    {
+      "line": 303943,
+      "zone": 16,
+      "start": 59066,
+      "end": 59332,
+      "type": 5,
+      "etype": 0
+    },
+    {
+      "line": 304212,
+      "zone": 3117,
+      "start": 59333,
+      "end": 1279652,
+      "type": 2,
+      "etype": 0
+    }
+  ],
+  "scaling_factor": 0.001,
+  "wall_zone_id": 13,
+  "n_wall_faces_raw": 57325,
+  "Nw": 28771,
+  "Fw": 57325,
+  "Ew": 172194,
+  "feature_dim": 7
+}
