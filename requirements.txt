@@ -2,6 +2,9 @@
 torch
 torch-geometric
 
+# Bayesian uncertainty (v2 model output head)
+torchbnn
+
 # Mesh / CFD
 pyvista
 vtk
