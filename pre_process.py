@@ -171,9 +171,9 @@ def create_graph(case_path: Path, flow_params: FlowParams):
     # Default pressure to 0
     wall_p = np.zeros(n_wall, dtype=np.float32)
 
-    # 6. Build Original Data Object Structure
+    # 6. Build Original Data Object Structure (without pressure)
     return Data(
-        x=torch.tensor(np.hstack([wall_centres_arr, wall_p.reshape(-1, 1)]), dtype=torch.float32),
+        x=torch.tensor(wall_centres_arr, dtype=torch.float32),
         edge_index=torch.tensor(edge_index, dtype=torch.long),
         edge_attr=torch.tensor(edge_attr, dtype=torch.float32),
         y=torch.tensor(wall_wss, dtype=torch.float32),

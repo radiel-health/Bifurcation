@@ -294,7 +294,7 @@ class WSSPredictor(nn.Module):
     
     def __init__(
         self,
-        node_feature_dim=4,
+        node_feature_dim=3,
         flow_param_dim=1,
         hidden_dim=64,
         context_dim=64,
@@ -448,7 +448,7 @@ if __name__ == "__main__":
     
     # Create model
     model = WSSPredictor(
-        node_feature_dim=10,
+        node_feature_dim=3,
         flow_param_dim=3,
         hidden_dim=64,
         context_dim=64,

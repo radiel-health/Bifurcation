@@ -55,12 +55,11 @@ class Config:
     # =========================================================================
     
     # Number of features per node (3D point cloud)
-    # Current features (4 total):
+    # Current features (3 total):
     # 0: x coordinate
     # 1: y coordinate
     # 2: z coordinate
-    # 3: pressure (p)
-    node_feature_dim = 4
+    node_feature_dim = 3
     
     # Flow parameters dimension: [Re, angle, child_size]
     flow_param_dim = 3
