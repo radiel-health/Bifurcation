@@ -88,49 +88,41 @@ def compute_loss(y_pred, y_true, reduction='mean'):
     return loss
 
 
-def train_epoch(model, loader, optimizer, device, grad_clip=None):
-    """
-    Train for one epoch.
-    
-    Args:
-        model: WSSPredictor instance
-        loader: DataLoader for training data
-        optimizer: Optimizer instance
-        device: torch device
-        grad_clip: Gradient clipping value (None to disable)
-        
-    Returns:
-        avg_loss: Average loss over epoch
-    """
+def train_epoch(model, loader, optimizer, device, grad_clip=None, accumulation_steps=16):
     model.train()
     total_loss = 0
     num_samples = 0
-    
-    for batch in loader:
+
+    optimizer.zero_grad()
+
+    for i, batch in enumerate(loader):
+        # Bring back your heartbeat message!
+        print(f"Batch {i}: {batch.num_graphs} graphs, {batch.x.shape[0]} total nodes, {batch.edge_index.shape[1]} total edges")
+        
         batch = batch.to(device)
-        
-        # Forward pass
+
         y_pred = model(batch)
+        step_loss = (1 - kl_weight) * compute_loss(y_pred, batch.y) + kl_weight * kl_loss(model)
         
-        # Compute loss
-        loss = (1-kl_weight)*compute_loss(y_pred, batch.y) + kl_weight*kl_loss(model)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        
-        optimizer.step()
-        
-        # Accumulate loss
-        total_loss += loss.item() * batch.num_graphs
+        # Scale the loss
+        scaled_loss = step_loss / accumulation_steps
+        scaled_loss.backward()
+
+        # Update every N steps
+        if (i + 1) % accumulation_steps == 0 or (i + 1) == len(loader):
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            # Optional: print a little checkmark to show the update happened
+            print(f"  --> Optimizer step completed (Effective Batch Size: {accumulation_steps if (i+1)%accumulation_steps==0 else (i+1)%accumulation_steps})")
+
+        total_loss += step_loss.item() * batch.num_graphs
         num_samples += batch.num_graphs
-    
-    avg_loss = total_loss / num_samples
-    return avg_loss
+
+    return total_loss / num_samples
 
 @torch.no_grad()
 def validate_epoch(model, loader, device):

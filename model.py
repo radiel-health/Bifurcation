@@ -42,7 +42,7 @@ class FlowEncoder(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, output_dim)
         
         # Batch norm for stability
-        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        self.bn1 = nn.LayerNorm(hidden_dim)
     
     def forward(self, flow_params):
         """
