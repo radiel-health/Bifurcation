@@ -7,10 +7,12 @@ from collections import defaultdict
 from torch_geometric.data import Data
 from typing import TypedDict
 from config import config
-
+import gdown
+import zipfile
 # --- Configuration ---
 OUTPUT_DIR = Path("ProcessedData/3D")
 INPUT_DIR = Path(config.input_data_dir)
+GOOGLE_DRIVE_ZIP_URL = config.google_drive_zip_url
 
 class FlowParams(TypedDict):
     re: float
@@ -179,6 +181,54 @@ def create_graph(case_path: Path, flow_params: FlowParams):
         flow_params=torch.tensor([[flow_params['re'], flow_params['angle'], flow_params['child_size']]], dtype=torch.float32),
         num_nodes=n_wall
     )
+
+def download_and_extract_data():
+    """Download data from Google Drive and extract to the current directory."""
+    # We extract to "." because the zip contains a "Data/" folder.
+    # This ensures the final path is ./Data/...
+    extract_path = "."
+
+    print(f"Downloading data from Google Drive...")
+
+    try:
+        # gdown handles the 'large file' confirmation automatically.
+        # fuzzy=True helps it find the ID even from a full URL.
+        zip_path = gdown.download(GOOGLE_DRIVE_ZIP_URL, quiet=False, fuzzy=True)
+
+        if not zip_path or not zipfile.is_zipfile(zip_path):
+            raise RuntimeError("Downloaded file is not a valid zip. Check the File ID/URL.")
+
+        print("Download complete. Extracting...")
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Extracting to '.' merges the zip's 'Data/' folder
+            # with your current working directory.
+            zip_ref.extractall(extract_path)
+
+        print(f"Data successfully extracted to {os.path.join(os.getcwd(), 'Data')}")
+
+        # Clean up the temporary zip file
+        os.remove(zip_path)
+        print("Cleaned up temporary zip file.")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
+
+
+def check_and_download_data():
+    """Check if INPUT_DIR has OpenFOAM cases, download if empty."""
+    # Search for Reynolds folders (e.g., Re100, Re500)
+    re_dirs = list(Path(INPUT_DIR).rglob("Re*"))
+
+    if not re_dirs:
+        print(f"No Reynolds folders found in {INPUT_DIR}. Downloading...")
+        download_and_extract_data()
+
+        re_dirs = list(Path(INPUT_DIR).rglob("Re*"))
+        assert len(re_dirs) > 0, "INPUT_DIR is still empty after downloading and extracting data"
+
+    print(f"Found {len(re_dirs)} cases in {INPUT_DIR}")
 
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
