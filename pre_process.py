@@ -1,202 +1,206 @@
-import pandas as pd
-import numpy as np
-import torch
 import os
-import zipfile
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
-from torch_geometric.data import Data
-from torch_geometric.nn import knn_graph
-from torch_geometric.utils import to_undirected
 import re
+import torch
+import numpy as np
+from pathlib import Path
+from collections import defaultdict
+from torch_geometric.data import Data
 from typing import TypedDict
-import numpy.typing as npt
-import gdown
 from config import config
 
 # --- Configuration ---
-OUTPUT_DIR = "ProcessedData/3D"
-K_NEIGHBORS = 6
-INPUT_DIR = config.input_data_dir
-GOOGLE_DRIVE_ZIP_URL = config.google_drive_zip_url
-# ---------------------
-
-class BoundaryData(TypedDict):
-    """Type definition for boundary data."""
-
-    coords: npt.NDArray[np.float32]  # Shape (N, 3)
-    wss_mag: npt.NDArray[np.float32]  # Shape (N,)
-    wss_x: npt.NDArray[np.float32]  # Shape (N,)
-    wss_y: npt.NDArray[np.float32]  # Shape (N,)
-    wss_z: npt.NDArray[np.float32]  # Shape (N,)
-    pressure: npt.NDArray[np.float32]  # Shape (N,)
-
+OUTPUT_DIR = Path("ProcessedData/3D")
+INPUT_DIR = Path(config.input_data_dir)
 
 class FlowParams(TypedDict):
-    """Type definitions for flow data"""
+    re: float
+    angle: float
+    child_size: float
 
-    # TODO: some aren't really 'flow parameters' so fix this semantic inconsistency
-    re: np.float32
-    angle: np.float32
-    child_size: np.float32
+# ============================================================================
+# Robust OpenFOAM Parsers (Aligned with dataset.py logic)
+# ============================================================================
 
+def parse_openfoam_vector_field(filepath: str, is_result_file: bool = False) -> np.ndarray:
+    """Parses OpenFOAM vector fields into an (N, 3) numpy array."""
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
 
-def download_and_extract_data():
-    """Download data from Google Drive and extract to the current directory."""
-    # We extract to "." because the zip contains a "Data/" folder.
-    # This ensures the final path is ./Data/...
-    extract_path = "." 
+    if is_result_file:
+        content = content.split("boundaryField")[-1]
+
+    match = re.search(r"(\d+)\s*\n\s*\(\s*\n(.*?)\n\s*\)", content, re.DOTALL)
+    if match is None:
+        match = re.search(r"(\d+)\s*\(\s*\n(.*?)\n\s*\)", content, re.DOTALL)
+        if match is None:
+            raise ValueError(f"Could not parse vector field from {filepath}")
+
+    block = match.group(2)
+    vectors = re.findall(r"\(\s*([^\)]+)\)", block)
+    return np.array([[float(x) for x in v.split()] for v in vectors], dtype=np.float32)
+
+def parse_openfoam_faces(filepath: str) -> list[list[int]]:
+    """Parses OpenFOAM faces into a list of point-index lists."""
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+
+    match = re.search(r"(\d+)\s*\n\s*\(\s*\n(.*?)\n\s*\)", content, re.DOTALL)
+    if match is None:
+        match = re.search(r"(\d+)\s*\(\s*\n(.*?)\n\s*\)", content, re.DOTALL)
+    if match is None:
+        raise ValueError(f"Could not parse faces from {filepath}")
+
+    block = match.group(2)
+    faces = []
+    for line in block.strip().split("\n"):
+        idx_match = re.search(r"\d+\(([^)]+)\)", line.strip())
+        if idx_match:
+            indices = [int(x) for x in idx_match.group(1).split()]
+            faces.append(indices)
+    return faces
+
+def parse_boundary(filepath: str) -> dict:
+    """Parses boundary file into a dict of patch properties."""
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+
+    patches = {}
+    pattern = r"(\w[\w-]*)\s*\{[^}]*type\s+(\w+);\s*(?:inGroups[^;]*;\s*)?nFaces\s+(\d+);\s*startFace\s+(\d+);"
+    for m in re.finditer(pattern, content):
+        name = m.group(1)
+        patches[name] = {
+            "type": m.group(2),
+            "nFaces": int(m.group(3)),
+            "startFace": int(m.group(4)),
+        }
+    return patches
+
+# ============================================================================
+# Path & Mesh Helpers
+# ============================================================================
+
+def find_mesh_dir(case_path: Path) -> Path:
+    re100_mesh = case_path.parent / "Re100" / "constant" / "polyMesh"
+    local_mesh = case_path / "constant" / "polyMesh"
+
+    if re100_mesh.exists(): return re100_mesh
+    if local_mesh.exists(): return local_mesh
+    raise FileNotFoundError(f"Mesh not found for {case_path}")
+
+def get_latest_timestep(case_path: Path) -> Path:
+    subdirs = [d for d in os.listdir(case_path) if os.path.isdir(case_path / d)]
+    timesteps = [d for d in subdirs if d.replace('.','',1).isdigit() and float(d) > 0]
+    if not timesteps: raise ValueError(f"No result timesteps in {case_path}")
+    latest = max(timesteps, key=float)
+    return case_path / latest
+
+# ============================================================================
+# Graph Construction
+# ============================================================================
+
+def create_graph(case_path: Path, flow_params: FlowParams):
+    poly_mesh_dir = find_mesh_dir(case_path)
+
+    # 1. Parse Mesh Elements
+    points = parse_openfoam_vector_field(str(poly_mesh_dir / "points"), is_result_file=False)
+    faces = parse_openfoam_faces(str(poly_mesh_dir / "faces"))
+    boundary = parse_boundary(str(poly_mesh_dir / "boundary"))
+
+    # 2. Identify all wall patches
+    wall_patches = {k: v for k, v in boundary.items() if v["type"] == "wall"}
+    if not wall_patches:
+        raise ValueError("No wall patches found in boundary file.")
+
+    wall_centres = []
+    wall_face_indices = []
     
-    print(f"Downloading data from Google Drive...")
+    for _name, info in wall_patches.items():
+        for i in range(info["startFace"], info["startFace"] + info["nFaces"]):
+            face_pts = points[faces[i]]
+            wall_centres.append(face_pts.mean(axis=0))
+            wall_face_indices.append(i)
+            
+    wall_centres_arr = np.array(wall_centres, dtype=np.float32)
+    n_wall = len(wall_centres_arr)
+
+    # 3. Adjacency via shared vertices
+    point_to_faces = defaultdict(set)
+    for local_idx, global_face_idx in enumerate(wall_face_indices):
+        for pt in faces[global_face_idx]:
+            point_to_faces[pt].add(local_idx)
+
+    src_list, dst_list = [], []
+    for _pt, face_set in point_to_faces.items():
+        face_list = list(face_set)
+        for i in range(len(face_list)):
+            for j in range(i + 1, len(face_list)):
+                src_list.extend([face_list[i], face_list[j]])
+                dst_list.extend([face_list[j], face_list[i]])
+
+    edge_index = np.array([src_list, dst_list], dtype=np.int64)
+
+    # 4. Remove Duplicate Edges and Calculate Edge Attributes
+    if edge_index.shape[1] > 0:
+        edge_pairs = edge_index.T
+        _, unique_idx = np.unique(edge_pairs, axis=0, return_index=True)
+        edge_index = edge_index[:, np.sort(unique_idx)]
+
+        # Edge features: [distance, dx, dy, dz]
+        src_coords = wall_centres_arr[edge_index[0]]
+        dst_coords = wall_centres_arr[edge_index[1]]
+        diff = dst_coords - src_coords
+        dist = np.linalg.norm(diff, axis=1, keepdims=True)
+        edge_attr = np.concatenate([dist, diff], axis=1).astype(np.float32)
+    else:
+        edge_attr = np.zeros((0, 4), dtype=np.float32)
+
+    # 5. Parse Result Fields (WSS)
+    res_path = get_latest_timestep(case_path)
+    wss_all = parse_openfoam_vector_field(str(res_path / "wallShearStress"), is_result_file=True)
+
+    wall_wss_parts = []
     
-    try:
-        # gdown handles the 'large file' confirmation automatically.
-        # fuzzy=True helps it find the ID even from a full URL.
-        zip_path = gdown.download(GOOGLE_DRIVE_ZIP_URL, quiet=False, fuzzy=True)
-
-        if not zip_path or not zipfile.is_zipfile(zip_path):
-            raise RuntimeError("Downloaded file is not a valid zip. Check the File ID/URL.")
-
-        print("Download complete. Extracting...")
+    for _name, info in wall_patches.items():
+        wall_wss_parts.append(wss_all[: info["nFaces"]])
+        wss_all = wss_all[info["nFaces"]:]
         
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Extracting to '.' merges the zip's 'Data/' folder 
-            # with your current working directory.
-            zip_ref.extractall(extract_path)
-        
-        print(f"Data successfully extracted to {os.path.join(os.getcwd(), 'Data')}")
-        
-        # Clean up the temporary zip file
-        os.remove(zip_path)
-        print("Cleaned up temporary zip file.")
+    wall_wss = np.vstack(wall_wss_parts).astype(np.float32)
+    
+    # Default pressure to 0
+    wall_p = np.zeros(n_wall, dtype=np.float32)
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        raise
-
-
-def check_and_download_data():
-    """Check if INPUT_DIR has data, download if empty."""
-    csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
-
-    if not csv_files:
-        download_and_extract_data()
-
-        csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
-        assert len(csv_files) > 0, "INPUT_DIR is still empty after downloading data"
-
-    print(f"Found {len(csv_files)} data files in {INPUT_DIR}")
-
-
-def load_boundary_csv(csv_path: Path) -> BoundaryData:
-    """Load boundary data from CSV file."""
-    df = pd.read_csv(csv_path)
-    return {
-        "coords": df[["x", "y", "z"]].to_numpy(dtype=np.float32),
-        "wss_mag": df["wss_mag"].to_numpy(dtype=np.float32),
-        "wss_x": df["wss_x"].to_numpy(dtype=np.float32),
-        "wss_y": df["wss_y"].to_numpy(dtype=np.float32),
-        "wss_z": df["wss_z"].to_numpy(dtype=np.float32),
-        "pressure": df["p"].to_numpy(dtype=np.float32),
-    }
-
-
-def create_edges(coords: npt.NDArray[np.float32], k: int = 6):
-    """Create generic edge connectivity using K-Nearest Neighbors."""
-    pos = torch.tensor(coords, dtype=torch.float32)
-    return to_undirected(knn_graph(pos, k=k, loop=False))
-
-
-def create_graph(data_dict: BoundaryData, flow_params: FlowParams):
-    """Package generic CSV data into PyG Data object."""
-    coords = data_dict["coords"]
-    num_nodes = len(coords)
-
-    edge_index = create_edges(coords, k=K_NEIGHBORS)
-
-    # Features: [x, y, z, p]
-    pressure = data_dict["pressure"].reshape(-1, 1)
-    node_features = np.hstack([coords, pressure])
-    x = torch.tensor(node_features, dtype=torch.float32)
-
-    # Targets: [WSS_x, WSS_y, WSS_z]
-    y_target = np.column_stack(
-        [data_dict["wss_x"], data_dict["wss_y"], data_dict["wss_z"]]
-    )
-
-    fp = torch.tensor(
-        [[flow_params["re"], flow_params["angle"], flow_params["child_size"]]],
-        dtype=torch.float32,
-    )
-
+    # 6. Build Original Data Object Structure
     return Data(
-        x=x,
-        edge_index=edge_index,
-        y=torch.tensor(y_target, dtype=torch.float32),
-        pos=torch.tensor(coords, dtype=torch.float32),
-        flow_params=fp,
-        num_nodes=num_nodes,
+        x=torch.tensor(np.hstack([wall_centres_arr, wall_p.reshape(-1, 1)]), dtype=torch.float32),
+        edge_index=torch.tensor(edge_index, dtype=torch.long),
+        edge_attr=torch.tensor(edge_attr, dtype=torch.float32),
+        y=torch.tensor(wall_wss, dtype=torch.float32),
+        pos=torch.tensor(wall_centres_arr, dtype=torch.float32),
+        flow_params=torch.tensor([[flow_params['re'], flow_params['angle'], flow_params['child_size']]], dtype=torch.float32),
+        num_nodes=n_wall
     )
-
 
 if __name__ == "__main__":
-    check_and_download_data()
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    re_dirs = sorted([p for p in Path(INPUT_DIR).rglob("Re*") if "constant" not in str(p) and "ProcessedData" not in str(p)])
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Found {len(re_dirs)} cases to process.")
+    success_count = 0
 
-    # 2. Get all wall_wss.csv files recursively in the input directory
-    csv_files = list(Path(INPUT_DIR).rglob("wall_wss.csv"))
-    print(f"Found {len(csv_files)} files to process in {INPUT_DIR}")
-
-    for csv_path in csv_files:
-        print(f"Processing: {csv_path}...", end=" ")
-
+    for re_path in re_dirs:
+        print(f"Processing: {re_path.parent.name}/{re_path.name}...", end="")
         try:
-            # 3. Load and Convert
-            raw_data = load_boundary_csv(csv_path)
+            re_val = float(re_path.name[2:])
+            angle_match = re.search(r"angle(\d+)_(\d+)", re_path.parent.name)
+            angle_val, size_val = float(angle_match.group(1)), float(angle_match.group(2))
 
-            # Extract Reynolds number from parent directory (e.g., Re100 -> 100)
-            # ---
-            re_dir = csv_path.parent.name  # e.g., "Re100"
-            assert re_dir.startswith("Re")
-            re_val = np.float32(re_dir[2:])
-            # ---
+            data = create_graph(re_path, {"re": re_val, "angle": angle_val, "child_size": size_val})
 
-            # Extract bifurcation angle from grandparent directory
-            # e.g., "bifurcation_angle30_1000_ascii" -> 30
-            # ---
-            angle_dir = (
-                csv_path.parent.parent.name
-            )  # e.g., "bifurcation_angle30_1000_ascii"
-            pattern = r"^bifurcation_angle(?P<angle>\d+)_(?P<child_size>\d+)_ascii$"  # Define the expected pattern
-            match = re.fullmatch(pattern, angle_dir)  # Match the pattern
-            assert (
-                match
-            ), f"Directory name '{angle_dir}' does not match the expected format 'bifurcation_angle{{nat1}}_{{nat2}}_ascii'"
-            angle_val = np.float32(
-                match.group("angle")
-            )  # Extract angle value and convert to float
-            child_size_val = np.float32(match.group("child_size"))
-            # TODO: think about how to better use angle_val and other params
-            # ---
-
-            # 4. Save the .pt file - preserve folder structure in filename
-            # e.g., bifurcation_angle30_1000_ascii_Re100.pt
-            graph_data = create_graph(
-                raw_data,
-                flow_params=FlowParams(
-                    re=re_val, angle=angle_val, child_size=child_size_val
-                ),
-            )
-            angle_name = csv_path.parent.parent.name
-            re_name = csv_path.parent.name
-            save_name = f"{angle_name}_{re_name}.pt"
-            torch.save(graph_data, os.path.join(OUTPUT_DIR, save_name))
-            print("Done.")
-
+            save_name = f"{re_path.parent.name}_{re_path.name}.pt"
+            torch.save(data, OUTPUT_DIR / save_name)
+            print(" Done.")
+            success_count += 1
         except Exception as e:
-            print(f"Failed! Error: {e}")
+            print(f" Failed! {e}")
 
-    print(f"\nPreprocessing complete. Files saved to {OUTPUT_DIR}")
+    print(f"\nProcessing complete. Built {success_count} graphs in {OUTPUT_DIR}")

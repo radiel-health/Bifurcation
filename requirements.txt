@@ -31,7 +31,6 @@ soupsieve==2.8.3
 sympy==1.14.0
 torch==2.10.0
 torch-geometric==2.7.0
-torch_cluster==1.6.3
 torchbnn==1.2
 tqdm==4.67.3
 typing_extensions==4.15.0
