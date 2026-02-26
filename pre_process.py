@@ -231,6 +231,7 @@ def check_and_download_data():
     print(f"Found {len(re_dirs)} cases in {INPUT_DIR}")
 
 if __name__ == "__main__":
+    check_and_download_data()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     re_dirs = sorted([p for p in Path(INPUT_DIR).rglob("Re*") if "constant" not in str(p) and "ProcessedData" not in str(p)])
 
