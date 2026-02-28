@@ -18,18 +18,19 @@ from model import WSSPredictor
 def load_best_model(checkpoint_path='Models/best_model.pt'):
     """Load the best trained model from checkpoint."""
     device = torch.device('cpu')
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
+    # UPDATED: Initialize leaner physics model
     model = WSSPredictor(
         node_feature_dim=config.node_feature_dim,
-        flow_param_dim=config.flow_param_dim,
+        # Removed the obsolete flow_param_dim and context_dim
         hidden_dim=config.hidden_dim,
-        context_dim=config.context_dim,
         output_dim=config.target_dim,
         num_geom_layers=config.num_geom_layers,
         num_task_layers=config.num_task_layers,
         task_hidden_dim=config.task_hidden_dim,
-        dropout=config.dropout_rate
+        dropout=config.dropout_rate,
+        output_range=False
     ).to(device)
     
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -43,18 +44,14 @@ def load_best_model(checkpoint_path='Models/best_model.pt'):
 
 def denormalize_wss(wss_normalized, stats):
     """Convert normalized WSS back to physical units."""
-    target_mean = torch.tensor(stats['target_mean'], dtype=torch.float32)
-    target_std = torch.tensor(stats['target_std'], dtype=torch.float32)
+    # We now just multiply by the global scalar!
+    target_scale = torch.tensor(stats['target_scale'], dtype=torch.float32)
     
     if isinstance(wss_normalized, np.ndarray):
         wss_normalized = torch.from_numpy(wss_normalized).float()
     
-    sign = torch.sign(wss_normalized)
-    log_mag = wss_normalized.abs() * target_std + target_mean
-    
-    mag = torch.expm1(log_mag)
-    
-    wss_physical = (sign * mag).numpy()
+    # Linear scale restoration (no expm1 distortion!)
+    wss_physical = (wss_normalized * target_scale).numpy()
     
     return wss_physical
 
@@ -92,6 +89,7 @@ def evaluate_model(model, test_loader, stats):
             
             all_coordinates.append(batch.pos.cpu().numpy())
             
+            # This safely handles the new [batch_size, 1] flow_params!
             flow_params = batch.flow_params.cpu().numpy()
             re_vals = flow_params[:, 0]
             

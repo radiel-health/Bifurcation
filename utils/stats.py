@@ -8,8 +8,7 @@ from torch_geometric.data import Data
 class NormalizationStats(TypedDict):
     feature_mean: torch.Tensor
     feature_std: torch.Tensor
-    target_mean: torch.Tensor
-    target_std: torch.Tensor
+    target_scale: torch.Tensor  # NEW: Single scalar for vector-safe scaling
     flow_mean: torch.Tensor
     flow_std: torch.Tensor
 
@@ -17,12 +16,6 @@ class NormalizationStats(TypedDict):
 def compute_stats(file_paths: list[Path]) -> NormalizationStats:
     """
     Compute normalization statistics from training data.
-
-    Args:
-        file_paths: list of paths to .pt graph files
-
-    Returns:
-        Dictionary with mean/std for features, targets, and flow params
     """
     all_features = []
     all_targets = []
@@ -38,18 +31,21 @@ def compute_stats(file_paths: list[Path]) -> NormalizationStats:
     all_targets = torch.cat(all_targets, dim=0)
     all_flow_params = torch.cat(all_flow_params, dim=0)
 
+    # 1. Coordinate Stats (Isotropic Scaling)
+    # Translate by 3D mean, but scale uniformly using a single global scalar!
     feature_mean = all_features.mean(dim=0)
-    feature_std = all_features.std(dim=0)
-    feature_std[feature_std < 1e-8] = 1.0
+    feature_std = all_features.std() # Single scalar prevents geometric warping
+    if feature_std < 1e-8:
+        feature_std = torch.tensor(1.0)
 
-    sign = torch.sign(all_targets)
-    log_mag = torch.log1p(torch.abs(all_targets))
-    signed_log = sign * log_mag
+    # 2. Target WSS Stats (Vector-Safe Scaling)
+    # Scale by 99th percentile magnitude to preserve vector direction
+    mags = torch.norm(all_targets, dim=1)
+    target_scale = torch.quantile(mags, 0.99)
+    if target_scale < 1e-8:
+        target_scale = torch.tensor(1.0)
 
-    target_mean = signed_log.mean(dim=0)
-    target_std = signed_log.std(dim=0)
-    target_std[target_std < 1e-8] = 1.0
-
+    # 3. Flow Stats (Re)
     flow_mean = all_flow_params.mean(dim=0)
     flow_std = all_flow_params.std(dim=0)
     flow_std[flow_std < 1e-8] = 1.0
@@ -57,8 +53,7 @@ def compute_stats(file_paths: list[Path]) -> NormalizationStats:
     return {
         "feature_mean": feature_mean,
         "feature_std": feature_std,
-        "target_mean": target_mean,
-        "target_std": target_std,
+        "target_scale": target_scale,
         "flow_mean": flow_mean,
         "flow_std": flow_std,
     }
@@ -68,9 +63,8 @@ def save_stats(stats: NormalizationStats, stats_file: Path):
     """Save normalization stats to JSON file."""
     stats_dict = {
         "feature_mean": stats["feature_mean"].tolist(),
-        "feature_std": stats["feature_std"].tolist(),
-        "target_mean": stats["target_mean"].tolist(),
-        "target_std": stats["target_std"].tolist(),
+        "feature_std": float(stats["feature_std"]),
+        "target_scale": float(stats["target_scale"]),
         "flow_mean": stats["flow_mean"].tolist(),
         "flow_std": stats["flow_std"].tolist(),
     }
@@ -87,8 +81,7 @@ def load_stats(stats_file: Path) -> NormalizationStats:
     return {
         "feature_mean": torch.tensor(stats["feature_mean"]),
         "feature_std": torch.tensor(stats["feature_std"]),
-        "target_mean": torch.tensor(stats["target_mean"]),
-        "target_std": torch.tensor(stats["target_std"]),
+        "target_scale": torch.tensor(stats["target_scale"]),
         "flow_mean": torch.tensor(stats["flow_mean"]),
         "flow_std": torch.tensor(stats["flow_std"]),
     }
@@ -97,18 +90,7 @@ def load_stats(stats_file: Path) -> NormalizationStats:
 def load_or_compute_stats(
     files: list[Path], data_dir: Path, split: str
 ) -> NormalizationStats:
-    """
-    Load normalization stats from file or compute from training set.
-
-    Args:
-        files: list of file paths for current split
-        data_dir: Directory containing the data
-        split: 'train', 'val', or 'test'
-        normalize: Whether normalization is enabled
-
-    Returns:
-        Dictionary with feature_mean, feature_std, target_mean, target_std, flow_mean, flow_std
-    """
+    """Load normalization stats from file or compute from training set."""
     stats_file = data_dir / "normalization_stats.json"
 
     if stats_file.exists():
@@ -122,17 +104,15 @@ def load_or_compute_stats(
         print(f"Saved normalization stats to {stats_file}")
         print(f"\nNormalization statistics:")
         print(f"  Feature mean: {stats['feature_mean']}")
-        print(f"  Feature std: {stats['feature_std']}")
-        print(f"  Target (log) mean: {stats['target_mean']}")
-        print(f"  Target (log) std: {stats['target_std']}")
+        print(f"  Feature std (global scale): {stats['feature_std']:.6f}")
+        print(f"  Target scale (99th %ile Mag): {stats['target_scale']:.6f}")
         print(f"  Flow mean: {stats['flow_mean']}")
         print(f"  Flow std: {stats['flow_std']}")
         return stats
 
     else:
         raise FileNotFoundError(
-            f"Normalization stats not found at {stats_file}. "
-            "Please run with split='train' first to compute statistics."
+            f"Normalization stats not found at {stats_file}."
         )
 
 
@@ -141,35 +121,20 @@ def normalize_data(
     normalization_stats: NormalizationStats,
 ) -> Data:
     """Normalize features, targets, and flow parameters using precomputed stats."""
-    feature_mean = normalization_stats["feature_mean"]
-    feature_std = normalization_stats["feature_std"]
-    target_mean = normalization_stats["target_mean"]
-    target_std = normalization_stats["target_std"]
-    flow_mean = normalization_stats["flow_mean"]
-    flow_std = normalization_stats["flow_std"]
-    data.x = (data.x - feature_mean) / feature_std
+    # Centered and uniformly scaled coordinates
+    data.x = (data.x - normalization_stats["feature_mean"]) / normalization_stats["feature_std"]
 
-    sign = torch.sign(data.y)
-    log_mag = torch.log1p(torch.abs(data.y))
-    signed_log = sign * log_mag
-    data.y = (signed_log - target_mean) / target_std
+    # Pure scalar multiplication preserves exact 3D vector directions!
+    data.y = data.y / normalization_stats["target_scale"]
 
-    data.flow_params = (data.flow_params - flow_mean) / flow_std
+    data.flow_params = (data.flow_params - normalization_stats["flow_mean"]) / normalization_stats["flow_std"]
 
     return data
 
 
 def denormalize_targets(
     normalized_targets: torch.Tensor,
-    target_mean: torch.Tensor,
-    target_std: torch.Tensor,
+    target_scale: torch.Tensor,
 ) -> torch.Tensor:
     """Convert normalized predictions back to original WSS scale."""
-    signed_log = normalized_targets * target_std + target_mean
-
-    sign = torch.sign(signed_log)
-    log_mag = torch.abs(signed_log)
-
-    mag = torch.expm1(log_mag)
-
-    return sign * mag
+    return normalized_targets * target_scale
