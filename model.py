@@ -22,41 +22,6 @@ from torch_geometric.data import Data, Batch
 import torchbnn as bnn
 from math import ceil
 
-
-class FlowEncoder(nn.Module):
-    """
-    Encode flow parameters [Re, angle, child_size] into context vector.
-    
-    Architecture: 2-layer MLP with ReLU
-    
-    Args:
-        input_dim: 3 (Re, angle, child_size)
-        hidden_dim: Hidden layer size
-        output_dim: Context vector dimension
-    """
-    
-    def __init__(self, input_dim=1, hidden_dim=64, output_dim=64):
-        super().__init__()
-        
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        
-        # Batch norm for stability
-        self.bn1 = nn.LayerNorm(hidden_dim)
-    
-    def forward(self, flow_params):
-        """
-        Args:
-            flow_params: [batch_size, 3] tensor
-            
-        Returns:
-            context: [batch_size, output_dim] tensor
-        """
-        x = F.relu(self.bn1(self.fc1(flow_params)))
-        x = self.fc2(x)
-        return x
-
-
 class GeometryEncoder(nn.Module):
     """
     Process boundary mesh with graph convolutions.
@@ -138,49 +103,6 @@ class GeometryEncoder(nn.Module):
         
         return h
 
-
-class FiLMLayer(nn.Module):
-    """
-    Feature-wise Linear Modulation (FiLM) layer.
-    
-    Modulates geometry features using flow context:
-        h_out = γ(context) ⊙ h_geom + β(context)
-    
-    where γ and β are learned affine transformation parameters.
-    
-    Args:
-        context_dim: Flow context vector dimension
-        feature_dim: Geometry feature dimension
-    """
-    
-    def __init__(self, context_dim=64, feature_dim=64):
-        super().__init__()
-        
-        # Networks to produce γ (scale) and β (shift)
-        self.gamma_net = nn.Linear(context_dim, feature_dim)
-        self.beta_net = nn.Linear(context_dim, feature_dim)
-    
-    def forward(self, h_geom, context, batch):
-        """
-        Args:
-            h_geom: [num_nodes, feature_dim] geometry features
-            context: [batch_size, context_dim] flow context
-            batch: [num_nodes] batch assignment for each node
-            
-        Returns:
-            h_fused: [num_nodes, feature_dim] modulated features
-        """
-        # Generate per-node modulation parameters
-        # context[batch] broadcasts context to each node in its graph
-        gamma = self.gamma_net(context[batch])  # [num_nodes, feature_dim]
-        beta = self.beta_net(context[batch])    # [num_nodes, feature_dim]
-        
-        # Apply affine transformation
-        h_fused = gamma * h_geom + beta
-        
-        return h_fused
-
-
 class TaskHead(nn.Module):
     def __init__(self, input_dim=64, hidden_dim=128, output_dim=2, 
                  num_layers=5, dropout=0.3, monte_carlo_sims=100, 
@@ -203,7 +125,7 @@ class TaskHead(nn.Module):
         
         # GPS layers
         self.convs = nn.ModuleList()
-        for i in range(num_layers):
+        for _ in range(num_layers):
             # All layers now operate at hidden_dim (128)
             # This allows GPSConv internal residuals (h = h + x) to match shapes
             local_conv = GATConv(
@@ -272,32 +194,10 @@ class TaskHead(nn.Module):
             return torch.mean(stacked_preds, dim=0)
 
 class WSSPredictor(nn.Module):
-    """
-    Complete model: Two-stream GNN with FiLM modulation for WSS prediction.
-    
-    Architecture:
-        1. Flow Encoder: [Re, Lx, Ly] → context vector
-        2. Geometry Encoder: Node features + edges → geometry embeddings
-        3. FiLM Fusion: Context modulates geometry
-        4. Task Head: Fused features → WSS predictions
-    
-    Args:
-        node_feature_dim: Dimension of node features (10)
-        flow_param_dim: Dimension of flow parameters (3)
-        hidden_dim: Hidden dimension for GNN layers
-        context_dim: Flow context dimension
-        output_dim: Output dimension (2 for x,y WSS components)
-        num_geom_layers: Number of geometry encoder layers
-        num_task_layers: Number of task head layers
-        dropout: Dropout rate
-    """
-    
     def __init__(
         self,
-        node_feature_dim=3,
-        flow_param_dim=1,
+        node_feature_dim=3, # e.g., 3 coords + 3 normals + 1 Re = 7
         hidden_dim=64,
-        context_dim=64,
         output_dim=3,
         num_geom_layers=3,
         num_task_layers=2,
@@ -306,14 +206,7 @@ class WSSPredictor(nn.Module):
     ):
         super().__init__()
         
-        # Component 1: Flow encoder
-        self.flow_encoder = FlowEncoder(
-            input_dim=flow_param_dim,
-            hidden_dim=hidden_dim,
-            output_dim=context_dim
-        )
-        
-        # Component 2: Geometry encoder
+        # 1. Geometry Encoder (Now handles Re organically)
         self.geom_encoder = GeometryEncoder(
             input_dim=node_feature_dim,
             hidden_dim=hidden_dim,
@@ -321,13 +214,7 @@ class WSSPredictor(nn.Module):
             dropout=dropout
         )
         
-        # Component 3: FiLM modulation
-        self.film = FiLMLayer(
-            context_dim=context_dim,
-            feature_dim=hidden_dim
-        )
-        
-        # Component 4: Task head
+        # 2. Task Head (With the physics relaxation we added!)
         self.task_head = TaskHead(
             input_dim=hidden_dim,
             hidden_dim=task_hidden_dim,
@@ -337,38 +224,24 @@ class WSSPredictor(nn.Module):
         )
     
     def forward(self, data):
-        """
-        Forward pass through entire model.
+        # 1. Extract data
+        x = data.x                    # [num_nodes, 3] (coordinates)
+        normals = data.normals        # [num_nodes, 3]
+        flow_params = data.flow_params # [batch_size, 1] (Just Re now)
+        edge_index = data.edge_index  
+        batch = data.batch            
         
-        Args:
-            data: PyG Batch object containing:
-                - x: [num_nodes, node_feature_dim] node features
-                - edge_index: [2, num_edges] edge connectivity
-                - flow_params: [batch_size, 1] flow parameters (Re)
-                - batch: [num_nodes] batch assignment
-                
-        Returns:
-            y_pred: [num_nodes, output_dim] WSS predictions
-        """
-        # Extract data
-        x = data.x                    # [num_nodes, 4]
-        edge_index = data.edge_index  # [2, num_edges]
-        batch = data.batch            # [num_nodes]
+        # 2. Broadcast Re to every node in the batch!
+        # This maps the batch-level Re to the individual nodes
+        node_re = flow_params[batch]  # [num_nodes, 1]
         
-        # Flow parameters from data.flow_params
-        flow_params = data.flow_params  # [batch_size, 1]
+        # 3. Concatenate everything into a single rich feature vector
+        # Features: [x, y, z, nx, ny, nz, Re] (dimension = 7)
+        combined_x = torch.cat([x, normals, node_re], dim=-1)
         
-        # 1. Encode flow context
-        context = self.flow_encoder(flow_params)  # [batch_size, context_dim]
-        
-        # 2. Encode geometry
-        h_geom = self.geom_encoder(x, edge_index)  # [num_nodes, hidden_dim]
-        
-        # 3. Fuse via FiLM modulation
-        h_fused = self.film(h_geom, context, batch)  # [num_nodes, hidden_dim]
-        
-        # 4. Predict WSS
-        y_pred = self.task_head(h_fused, edge_index, batch)  # [num_nodes, 3]
+        # 4. Straight through the network
+        h_geom = self.geom_encoder(combined_x, edge_index) 
+        y_pred = self.task_head(h_geom, edge_index, batch, normals) 
         
         return y_pred
     
@@ -391,112 +264,3 @@ class WSSPredictor(nn.Module):
                 y_pred = denormalize_fn(y_pred)
             
             return y_pred
-
-
-def count_parameters(model):
-    """Count trainable parameters in model."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def get_model_summary(model):
-    """
-    Print model architecture summary.
-    
-    Args:
-        model: WSSPredictor instance
-    """
-    print("=" * 80)
-    print("MODEL ARCHITECTURE SUMMARY")
-    print("=" * 80)
-    print()
-    
-    # Count parameters per component
-    flow_params = count_parameters(model.flow_encoder)
-    geom_params = count_parameters(model.geom_encoder)
-    film_params = count_parameters(model.film)
-    task_params = count_parameters(model.task_head)
-    total_params = count_parameters(model)
-    
-    print("Component Parameters:")
-    print(f"  Flow Encoder:     {flow_params:,}")
-    print(f"  Geometry Encoder: {geom_params:,}")
-    print(f"  FiLM Layer:       {film_params:,}")
-    print(f"  Task Head:        {task_params:,}")
-    print(f"  {'─' * 40}")
-    print(f"  Total:            {total_params:,}")
-    print()
-    
-    # Model size in MB
-    param_size_mb = total_params * 4 / (1024 ** 2)  # 4 bytes per float32
-    print(f"Model Size: {param_size_mb:.2f} MB")
-    print()
-    
-    print("Architecture:")
-    print(f"  Flow Encoder: [3] → [64] → [64]")
-    print(f"  Geometry Encoder: [10] → [64] (3 GCN layers)")
-    print(f"  FiLM Modulation: context[64] ⊙ geometry[64]")
-    print(f"  Task Head: [64] → [128] → [2] (2 GAT + MLP)")
-    print()
-    
-    print("=" * 80)
-
-
-if __name__ == "__main__":
-    """Test model creation and forward pass."""
-    
-    print("Testing WSSPredictor model...\n")
-    
-    # Create model
-    model = WSSPredictor(
-        node_feature_dim=3,
-        flow_param_dim=3,
-        hidden_dim=64,
-        context_dim=64,
-        output_dim=2,
-        num_geom_layers=3,
-        num_task_layers=2,
-        task_hidden_dim=128,
-        dropout=0.1
-    )
-    
-    # Print summary
-    get_model_summary(model)
-    
-    # Create dummy batch (2 graphs)
-    print("\nTesting forward pass with dummy data...")
-    
-    # Graph 1: 100 nodes
-    x1 = torch.randn(100, 10)
-    edge_index1 = torch.randint(0, 100, (2, 200))
-    
-    # Graph 2: 150 nodes
-    x2 = torch.randn(150, 10)
-    edge_index2 = torch.randint(0, 150, (2, 300))
-    
-    # Flow parameters
-    flow_params = torch.tensor([
-        [1000.0, 1.0, 1.0],  # Re=1000, Lx=1, Ly=1
-        [2000.0, 2.0, 1.0],  # Re=2000, Lx=2, Ly=1
-    ])
-    
-    # Create PyG batch
-    from torch_geometric.data import Data, Batch
-
-    # for single graph inference, just pass in just one data object
-    
-    data1 = Data(x=x1, edge_index=edge_index1, flow_params=flow_params[0:1])
-    data2 = Data(x=x2, edge_index=edge_index2, flow_params=flow_params[1:2])
-    batch = Batch.from_data_list([data1, data2])
-    
-    # Forward pass
-    model.eval()
-    with torch.no_grad():
-        y_pred = model(batch)
-    
-    print(f" Forward pass successful!")
-    num_nodes = batch.x.shape[0]
-    print(f"   Input: {num_nodes} nodes (100 + 150)")
-    print(f"   Output shape: {y_pred.shape}")
-    print(f"   Output range: [{y_pred.min():.6f}, {y_pred.max():.6f}]")
-    print()
-    print("Model is ready for training! ")

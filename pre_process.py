@@ -178,7 +178,8 @@ def create_graph(case_path: Path, flow_params: FlowParams):
         edge_attr=torch.tensor(edge_attr, dtype=torch.float32),
         y=torch.tensor(wall_wss, dtype=torch.float32),
         pos=torch.tensor(wall_centres_arr, dtype=torch.float32),
-        flow_params=torch.tensor([[flow_params['re'], flow_params['angle'], flow_params['child_size']]], dtype=torch.float32),
+        # Just keep Re. We drop angle and size.
+        flow_params=torch.tensor([[flow_params['re']]], dtype=torch.float32),
         num_nodes=n_wall
     )
 

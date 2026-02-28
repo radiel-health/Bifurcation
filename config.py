@@ -55,14 +55,14 @@ class Config:
     # =========================================================================
     
     # Number of features per node (3D point cloud)
-    # Current features (3 total):
-    # 0: x coordinate
-    # 1: y coordinate
-    # 2: z coordinate
-    node_feature_dim = 3
+    # Current features (7 total):
+    # 0,1,2: x, y, z coordinates
+    # 3,4,5: nx, ny, nz normal vectors
+    # 6: Re (Reynolds number broadcasted to node)
+    node_feature_dim = 7
     
-    # Flow parameters dimension: [Re, angle, child_size]
-    flow_param_dim = 3
+    # Flow parameters dimension: [Re]
+    flow_param_dim = 1
     
     # Target outputs (WSS components)
     target_dim = 3  # [wss_x, wss_y, wss_z]
@@ -71,9 +71,6 @@ class Config:
     # MODEL ARCHITECTURE
     # =========================================================================
     
-    # Flow encoder (processes [Re])
-    context_dim = 64  # Output dimension of flow context encoder
-    
     # Geometry encoder (processes boundary mesh)
     hidden_dim = 64  # Hidden dimension for GNN layers
     num_geom_layers = 3  # Number of GCN layers in geometry encoder
@@ -81,9 +78,6 @@ class Config:
     # Task head (predicts WSS)
     task_hidden_dim = 128  # Hidden dimension in task head
     num_task_layers = 2  # Number of GCN layers in task head
-    
-    # Fusion method
-    fusion_type = "film"  # Options: "film" or "concat"
     
     # Regularization
     dropout_rate = 0.3  # Dropout between GNN layers (0.0 = no dropout)
