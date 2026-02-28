@@ -152,102 +152,68 @@ def validate_epoch(model, loader, device):
     return avg_loss
 
 
-def save_checkpoint(model, optimizer, epoch, val_loss, path):
+def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, best_val_loss, path):
     """
-    Save model checkpoint.
-    
-    Args:
-        model: WSSPredictor instance
-        optimizer: Optimizer instance
-        epoch: Current epoch number
-        val_loss: Validation loss
-        path: Path to save checkpoint
+    Save model checkpoint including scheduler and best loss state.
     """
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
         'val_loss': val_loss,
+        'best_val_loss': best_val_loss
     }
     torch.save(checkpoint, path)
 
 
-def load_checkpoint(model, optimizer, path, device):
+def load_checkpoint(model, optimizer, scheduler, path, device):
     """
-    Load model checkpoint.
-    
-    Args:
-        model: WSSPredictor instance
-        optimizer: Optimizer instance
-        path: Path to checkpoint
-        device: torch device
-        
-    Returns:
-        epoch: Epoch number
-        val_loss: Validation loss
+    Load model checkpoint, safely handling older formats.
     """
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    if scheduler and checkpoint.get('scheduler_state_dict'):
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
     epoch = checkpoint['epoch']
     val_loss = checkpoint['val_loss']
+    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
-    return epoch, val_loss
+    return epoch, val_loss, best_val_loss
 
 
 def train_model(
-    model,
-    train_loader,
-    val_loader,
-    optimizer,
-    scheduler,
-    device,
-    num_epochs,
-    checkpoint_dir,
-    early_stop_patience=20,
-    grad_clip=1.0,
-    save_best_only=True,
+    model, train_loader, val_loader, optimizer, scheduler, device, num_epochs,
+    checkpoint_dir, early_stop_patience=20, grad_clip=1.0, save_best_only=True,
+    start_epoch=1, best_val_loss=float('inf'), history=None
 ):
-    """
-    Full training loop with validation, checkpointing, and early stopping.
-    
-    Args:
-        model: WSSPredictor instance
-        train_loader: DataLoader for training
-        val_loader: DataLoader for validation
-        optimizer: Optimizer
-        scheduler: Learning rate scheduler
-        device: torch device
-        num_epochs: Maximum number of epochs
-        checkpoint_dir: Directory to save checkpoints
-        early_stop_patience: Epochs without improvement before stopping
-        grad_clip: Gradient clipping value
-        save_best_only: Only save when validation improves
-        
-    Returns:
-        training_history: Dict with train/val losses per epoch
-    """
-    best_val_loss = float('inf')
     epochs_no_improve = 0
-    history = {
-        'train_loss': [],
-        'val_loss': [],
-        'lr': [],
-    }
+    
+    # Initialize history if starting fresh
+    if history is None:
+        history = {
+            'train_loss': [],
+            'val_loss': [],
+            'lr': [],
+        }
     
     print("\n" + "=" * 80)
-    print("TRAINING")
+    print(f"TRAINING (Starting from Epoch {start_epoch})")
     print("=" * 80)
     print(f"Device: {device}")
     print(f"Train batches: {len(train_loader)}")
     print(f"Val batches: {len(val_loader)}")
-    print(f"Epochs: {num_epochs}")
+    print(f"Target Epochs: {num_epochs}")
     print(f"Learning rate: {optimizer.param_groups[0]['lr']:.2e}")
     print("=" * 80 + "\n")
     
     start_time = time.time()
     
-    for epoch in range(1, num_epochs + 1):
+    # Loop starts from the resumed epoch
+    for epoch in range(start_epoch, num_epochs + 1):
         epoch_start = time.time()
         
         # Train
@@ -283,7 +249,7 @@ def train_model(
             # Save best model
             if save_best_only:
                 best_path = checkpoint_dir / "best_model.pt"
-                save_checkpoint(model, optimizer, epoch, val_loss, best_path)
+                save_checkpoint(model, optimizer, scheduler, epoch, val_loss, best_val_loss, best_path)
                 print(f"  ✓ Saved best model (val_loss: {val_loss:.6f})")
         else:
             epochs_no_improve += 1
@@ -291,7 +257,16 @@ def train_model(
         # Save periodic checkpoint
         if epoch % config.save_every_n_epochs == 0:
             ckpt_path = checkpoint_dir / f"checkpoint_epoch{epoch}.pt"
-            save_checkpoint(model, optimizer, epoch, val_loss, ckpt_path)
+            save_checkpoint(model, optimizer, scheduler, epoch, val_loss, best_val_loss, ckpt_path)
+            
+        # ALWAYS save the latest checkpoint for seamless resuming
+        latest_path = checkpoint_dir / "latest_checkpoint.pt"
+        save_checkpoint(model, optimizer, scheduler, epoch, val_loss, best_val_loss, latest_path)
+        
+        # Save training history to JSON immediately so it stays synced
+        history_path = checkpoint_dir / "training_history.json"
+        with open(history_path, 'w') as f:
+            json.dump(history, f, indent=2)
         
         # Early stopping
         if early_stop_patience is not None and epochs_no_improve >= early_stop_patience:
@@ -347,7 +322,6 @@ def ensure_processed_data_exists():
 
 def main():
     """Main training script."""
-    # Check if processed data exists, run preprocessing if needed
     ensure_processed_data_exists()
     
     print("\n" + "=" * 80)
@@ -364,12 +338,8 @@ def main():
         print(f"✓ Using CPU")
     print()
     
-    # Load dataset
     print("Loading dataset...")
-    
     batch_size = config.batch_size
-    
-    # Get dataloaders
     train_loader, val_loader, test_loader = get_dataloaders(
         batch_size=batch_size,
         num_workers=0,
@@ -381,18 +351,15 @@ def main():
     print(f"  Test: {len(test_loader.dataset)} graphs")
     print()
     
-    # Create model
     print("Creating model...")
     model = create_model(device)
     
-    # Create optimizer
     optimizer = optim.Adam(
         model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay
     )
     
-    # Create scheduler
     if config.use_scheduler:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -404,8 +371,29 @@ def main():
     else:
         scheduler = None
     
-    # Create checkpoint directory
     config.checkpoint_dir.mkdir(exist_ok=True)
+    
+    # ==========================================
+    # NEW: Resume Logic
+    # ==========================================
+    latest_ckpt_path = config.checkpoint_dir / "latest_checkpoint.pt"
+    history_path = config.checkpoint_dir / "training_history.json"
+    
+    start_epoch = 1
+    best_val_loss = float('inf')
+    history = None
+    
+    if latest_ckpt_path.exists():
+        print(f"\n[INFO] Found existing checkpoint. Resuming from {latest_ckpt_path}...")
+        loaded_epoch, _, loaded_best_val = load_checkpoint(model, optimizer, scheduler, latest_ckpt_path, device)
+        start_epoch = loaded_epoch + 1
+        best_val_loss = loaded_best_val
+        
+        if history_path.exists():
+            with open(history_path, 'r') as f:
+                history = json.load(f)
+                
+        print(f"[INFO] Successfully restored weights. Resuming at Epoch {start_epoch} (Best Val Loss: {best_val_loss:.6f})")
     
     # Train
     history = train_model(
@@ -420,19 +408,16 @@ def main():
         early_stop_patience=config.early_stop_patience if config.use_early_stopping else None,
         grad_clip=config.grad_clip_value if config.use_grad_clip else None,
         save_best_only=config.save_best_only,
+        start_epoch=start_epoch,           # Pass in the resume states
+        best_val_loss=best_val_loss,       # Pass in the resume states
+        history=history                    # Pass in the history
     )
-    
-    # Save training history
-    history_path = config.checkpoint_dir / "training_history.json"
-    with open(history_path, 'w') as f:
-        json.dump(history, f, indent=2)
-    print(f"✓ Training history saved to {history_path}")
     
     # Load best model for final evaluation
     best_path = config.checkpoint_dir / "best_model.pt"
     if best_path.exists():
         print("\nLoading best model for final evaluation...")
-        load_checkpoint(model, optimizer, best_path, device)
+        load_checkpoint(model, optimizer, scheduler, best_path, device)
     
     # Final test evaluation
     print("\nEvaluating on test set...")
