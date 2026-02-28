@@ -75,8 +75,24 @@ def r_squared(pred: np.ndarray, true: np.ndarray) -> float:
     return float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
 
-def relative_error(pred: np.ndarray, true: np.ndarray, eps: float = 1e-10) -> float:
-    return float(np.mean(np.abs(pred - true) / (np.abs(true) + eps)))
+def relative_error(pred: np.ndarray, true: np.ndarray, floor_percentile: float = 10.0) -> float:
+    """
+    Median relative error with a percentile floor on the denominator.
+
+    Nodes where |true| < 10th-percentile of |true| across the field get their
+    denominator floored to that percentile value, preventing near-zero WSS nodes
+    (e.g. symmetry-plane nodes in WSS_X) from blowing up the metric.
+    """
+    abs_true = np.abs(true)
+    floor    = float(np.percentile(abs_true, floor_percentile))
+    denom    = np.maximum(abs_true, floor)
+    return float(np.median(np.abs(pred - true) / denom))
+
+
+def nrmse(pred: np.ndarray, true: np.ndarray) -> float:
+    """Normalized RMSE = RMSE / std(true). Scale-free, unaffected by near-zero values."""
+    std_true = float(np.std(true))
+    return float(np.sqrt(np.mean((pred - true) ** 2)) / (std_true + 1e-30))
 
 
 def compute_metrics(pred: np.ndarray, true: np.ndarray) -> Dict:
@@ -87,6 +103,7 @@ def compute_metrics(pred: np.ndarray, true: np.ndarray) -> Dict:
         results[f"{label}_rmse"]    = rmse(p, t)
         results[f"{label}_r2"]      = r_squared(p, t)
         results[f"{label}_rel_err"] = relative_error(p, t)
+        results[f"{label}_nrmse"]   = nrmse(p, t)
 
     mag_pred = np.linalg.norm(pred, axis=1)
     mag_true = np.linalg.norm(true, axis=1)
@@ -94,6 +111,7 @@ def compute_metrics(pred: np.ndarray, true: np.ndarray) -> Dict:
     results["mag_rmse"]    = rmse(mag_pred, mag_true)
     results["mag_r2"]      = r_squared(mag_pred, mag_true)
     results["mag_rel_err"] = relative_error(mag_pred, mag_true)
+    results["mag_nrmse"]   = nrmse(mag_pred, mag_true)
 
     return results
 
@@ -153,7 +171,7 @@ def evaluate_loader_v2(
 
     all_pred = np.concatenate(all_pred, axis=0)
     all_true = np.concatenate(all_true, axis=0)
-    return compute_metrics(all_pred, all_true), per_sample
+    return compute_metrics(all_pred, all_true), per_sample, all_pred, all_true
 
 
 # ============================================================================
@@ -240,13 +258,13 @@ def evaluate_checkpoint_v2(
     test_ds     = BifurcationWSSDatasetV2(test_p, norm_stats)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
-    agg, per_sample = evaluate_loader_v2(model, test_loader, norm_stats, device)
+    agg, per_sample, all_pred, all_true = evaluate_loader_v2(model, test_loader, norm_stats, device)
 
     if run_calibration:
         calib = calibration_check(model, test_loader, norm_stats, device)
         agg["calibration"] = calib
 
-    return agg, per_sample
+    return agg, per_sample, all_pred, all_true
 
 
 # ============================================================================
@@ -255,15 +273,16 @@ def evaluate_checkpoint_v2(
 
 def print_metrics(metrics: Dict, title: str = ""):
     if title:
-        print(f"\n{'='*65}")
+        print(f"\n{'='*75}")
         print(f"  {title}")
-        print(f"{'='*65}")
+        print(f"{'='*75}")
     for key in ["wss_x", "wss_y", "wss_z", "mag"]:
         print(f"  {key:8s}  "
               f"MAE={metrics[f'{key}_mae']:.4e}  "
               f"RMSE={metrics[f'{key}_rmse']:.4e}  "
               f"R²={metrics[f'{key}_r2']:.4f}  "
-              f"RelErr={metrics[f'{key}_rel_err']:.4f}")
+              f"MedRelErr={metrics[f'{key}_rel_err']:.4f}  "
+              f"NRMSE={metrics[f'{key}_nrmse']:.4f}")
 
 
 def print_per_geometry(per_sample: List[Dict]):
@@ -369,7 +388,7 @@ def compare_v1_v2(
     )
 
     # --- V2 ---
-    agg2, _ = evaluate_checkpoint_v2(v2_ckpt, device=device)
+    agg2, _, _, _ = evaluate_checkpoint_v2(v2_ckpt, device=device)
 
     # Print comparison
     print(f"\n  {'Metric':20s}  {'V1':>12s}  {'V2':>12s}  {'Delta':>12s}")
@@ -388,6 +407,7 @@ def compare_v1_v2(
 # ============================================================================
 
 def _plot_r2_vs_re(per_sample: List[Dict], out_path: Path):
+    """R² vs Re with ±1σ shaded band across geometries."""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -396,30 +416,228 @@ def _plot_r2_vs_re(per_sample: List[Dict], out_path: Path):
 
     re_groups: Dict[int, List] = defaultdict(list)
     for s in per_sample:
-        re_val = int(s["re"].replace("Re", ""))
-        re_groups[re_val].append(s["metrics"])
+        re_groups[int(s["re"].replace("Re", ""))].append(s["metrics"])
 
-    res    = sorted(re_groups.keys())
-    r2_mag = [np.mean([m["mag_r2"]    for m in re_groups[r]]) for r in res]
-    r2_y   = [np.mean([m["wss_y_r2"] for m in re_groups[r]]) for r in res]
-    r2_x   = [np.mean([m["wss_x_r2"] for m in re_groups[r]]) for r in res]
-    r2_z   = [np.mean([m["wss_z_r2"] for m in re_groups[r]]) for r in res]
+    res = sorted(re_groups.keys())
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(res, r2_mag, "k-o",  label="Magnitude", linewidth=2)
-    ax.plot(res, r2_x,  "b--s", label="WSS_X")
-    ax.plot(res, r2_y,  "r--^", label="WSS_Y")
-    ax.plot(res, r2_z,  "g--v", label="WSS_Z")
-    ax.axhline(0, color="gray", linestyle=":", linewidth=0.8)
-    ax.set_xlabel("Reynolds Number")
-    ax.set_ylabel("R²")
-    ax.set_title("V2 Model: R² vs Reynolds Number")
-    ax.legend()
+    def stats(key):
+        means = np.array([np.mean([m[key] for m in re_groups[r]]) for r in res])
+        stds  = np.array([np.std( [m[key] for m in re_groups[r]]) for r in res])
+        return means, stds
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for key, label, color, ls in [
+        ("mag_r2",   "Magnitude", "black",   "-"),
+        ("wss_x_r2", "WSS_X",    "#2196F3", "--"),
+        ("wss_y_r2", "WSS_Y",    "#F44336", "--"),
+        ("wss_z_r2", "WSS_Z",    "#4CAF50", "--"),
+    ]:
+        m, s = stats(key)
+        ax.plot(res, m, color=color, linestyle=ls, linewidth=2,
+                marker="o", markersize=4, label=label)
+        ax.fill_between(res, m - s, m + s, alpha=0.12, color=color)
+
+    ax.axhline(0,   color="gray", linestyle=":",  linewidth=0.8)
+    ax.axhline(0.9, color="gray", linestyle="--", linewidth=0.5, alpha=0.4,
+               label="R²=0.9 target")
+    ax.set_xlabel("Reynolds Number", fontsize=12)
+    ax.set_ylabel("R²", fontsize=12)
+    ax.set_title("V2 Model: R² vs Reynolds Number  (shaded = ±1σ across geometries)",
+                 fontsize=13)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    ax.set_ylim(-1.6, 1.05)
     plt.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"R² vs Re plot → {out_path}")
+    print(f"R² vs Re plot          → {out_path}")
+
+
+def _plot_scatter_pred_vs_true(pred: np.ndarray, true: np.ndarray, out_dir: Path):
+    """2×2 predicted-vs-true scatter plots for X, Y, Z, and magnitude."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    mag_pred = np.linalg.norm(pred, axis=1)
+    mag_true = np.linalg.norm(true, axis=1)
+
+    panels = [
+        ("WSS_X",      pred[:, 0], true[:, 0], "#2196F3"),
+        ("WSS_Y",      pred[:, 1], true[:, 1], "#F44336"),
+        ("WSS_Z",      pred[:, 2], true[:, 2], "#4CAF50"),
+        ("Magnitude",  mag_pred,   mag_true,   "#9C27B0"),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 10))
+    for ax, (label, p, t, color) in zip(axes.flat, panels):
+        # Thin out points for speed: max 40k
+        idx = np.random.choice(len(p), min(len(p), 40_000), replace=False)
+        ax.scatter(t[idx], p[idx], s=1, alpha=0.15, color=color, rasterized=True)
+        lim = [min(t.min(), p.min()), max(t.max(), p.max())]
+        ax.plot(lim, lim, "k--", linewidth=1, label="y = x")
+        r2_val = r_squared(p, t)
+        ax.set_title(f"{label}   R²={r2_val:.4f}", fontsize=12)
+        ax.set_xlabel("CFD (true)", fontsize=10)
+        ax.set_ylabel("GNN (predicted)", fontsize=10)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.2)
+
+    fig.suptitle("V2 Model — Predicted vs True WSS  (test set, all nodes)",
+                 fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    out_path = out_dir / "scatter_pred_vs_true_v2.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Scatter plot           → {out_path}")
+
+
+def _plot_r2_heatmap(per_sample: List[Dict], out_path: Path):
+    """Heatmap of magnitude R² across bifurcation angle × Reynolds number."""
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
+    except ImportError:
+        return
+
+    angles  = sorted(set(s["angle"] for s in per_sample))
+    re_vals = sorted(set(int(s["re"].replace("Re", "")) for s in per_sample))
+
+    grid = np.full((len(angles), len(re_vals)), np.nan)
+    for s in per_sample:
+        ai = angles.index(s["angle"])
+        ri = re_vals.index(int(s["re"].replace("Re", "")))
+        grid[ai, ri] = s["metrics"]["mag_r2"]
+
+    fig, ax = plt.subplots(figsize=(max(14, len(re_vals) * 0.9), 4))
+    cmap = plt.cm.RdYlGn
+    norm = mcolors.TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0)
+    im = ax.imshow(grid, cmap=cmap, norm=norm, aspect="auto")
+
+    ax.set_xticks(range(len(re_vals)))
+    ax.set_xticklabels([str(r) for r in re_vals], rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(len(angles)))
+    ax.set_yticklabels([f"{a}°" for a in angles], fontsize=11)
+    ax.set_xlabel("Reynolds Number", fontsize=12)
+    ax.set_ylabel("Bifurcation Angle", fontsize=12)
+    ax.set_title("V2 Model — Magnitude R²  (green=good, red=poor, grey=not in test set)",
+                 fontsize=12)
+
+    for i in range(len(angles)):
+        for j in range(len(re_vals)):
+            val = grid[i, j]
+            if not np.isnan(val):
+                txt_color = "white" if abs(val) > 0.6 else "black"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=7.5, color=txt_color, fontweight="bold")
+
+    plt.colorbar(im, ax=ax, label="R²", shrink=0.8)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"R² heatmap             → {out_path}")
+
+
+def _plot_error_distributions(pred: np.ndarray, true: np.ndarray, out_path: Path):
+    """Per-component relative error histograms (clipped at 3× for readability)."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    mag_pred = np.linalg.norm(pred, axis=1)
+    mag_true = np.linalg.norm(true, axis=1)
+    CLIP = 3.0
+
+    panels = [
+        ("WSS_X",     pred[:, 0], true[:, 0], "#2196F3"),
+        ("WSS_Y",     pred[:, 1], true[:, 1], "#F44336"),
+        ("WSS_Z",     pred[:, 2], true[:, 2], "#4CAF50"),
+        ("Magnitude", mag_pred,   mag_true,   "#9C27B0"),
+    ]
+
+    fig, axes = plt.subplots(1, 4, figsize=(16, 5), sharey=False)
+    for ax, (label, p, t, color) in zip(axes, panels):
+        abs_t   = np.abs(t)
+        floor   = float(np.percentile(abs_t, 10))
+        denom   = np.maximum(abs_t, floor)
+        rel_err = np.abs(p - t) / denom
+        clipped = np.clip(rel_err, 0, CLIP)
+        pct_clipped = 100.0 * (rel_err > CLIP).mean()
+
+        ax.hist(clipped, bins=60, color=color, alpha=0.75, edgecolor="white",
+                linewidth=0.3)
+        med = float(np.median(rel_err))
+        ax.axvline(med, color="black", linestyle="--", linewidth=1.5,
+                   label=f"Median={med:.2f}")
+        ax.set_title(f"{label}\nR²={r_squared(p, t):.3f}", fontsize=11)
+        ax.set_xlabel(f"Relative error  ({pct_clipped:.1f}% > {CLIP}×)", fontsize=9)
+        ax.set_ylabel("Node count", fontsize=9)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.25)
+
+    fig.suptitle(f"V2 Model — Relative Error Distribution  (clipped at {CLIP}×)",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Error distributions    → {out_path}")
+
+
+def _plot_nrmse_bars(metrics: Dict, out_path: Path):
+    """
+    Grouped bar chart: NRMSE for WSS_X, WSS_Y, WSS_Z, and Magnitude.
+    Also overlays the R² for context (secondary axis).
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    components  = ["WSS_X", "WSS_Y", "WSS_Z", "Magnitude"]
+    keys_nrmse  = ["wss_x_nrmse", "wss_y_nrmse", "wss_z_nrmse", "mag_nrmse"]
+    keys_r2     = ["wss_x_r2",    "wss_y_r2",    "wss_z_r2",    "mag_r2"]
+    colors      = ["#2196F3", "#F44336", "#4CAF50", "#9C27B0"]
+
+    nrmse_vals  = [metrics[k] for k in keys_nrmse]
+    r2_vals     = [metrics[k] for k in keys_r2]
+
+    x = np.arange(len(components))
+
+    fig, ax1 = plt.subplots(figsize=(8, 5))
+    bars = ax1.bar(x, nrmse_vals, color=colors, alpha=0.8, width=0.5, zorder=2)
+    ax1.set_ylabel("NRMSE  (lower = better)", fontsize=12)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(components, fontsize=12)
+    ax1.set_ylim(0, max(nrmse_vals) * 1.35)
+    ax1.axhline(1.0, color="gray", linestyle="--", linewidth=0.8,
+                label="NRMSE=1  (baseline — predicting mean)")
+    ax1.grid(True, axis="y", alpha=0.25, zorder=0)
+
+    # Annotate NRMSE value on each bar
+    for bar, val in zip(bars, nrmse_vals):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                 f"{val:.3f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
+
+    # Secondary axis: R²
+    ax2 = ax1.twinx()
+    ax2.plot(x, r2_vals, color="black", marker="D", markersize=7,
+             linewidth=1.5, linestyle=":", label="R²", zorder=3)
+    ax2.set_ylabel("R²  (higher = better)", fontsize=12)
+    ax2.set_ylim(-0.3, 1.15)
+    ax2.axhline(0.9, color="darkgray", linestyle=":", linewidth=0.6, alpha=0.5)
+
+    # Combine legends
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, fontsize=10, loc="upper right")
+
+    ax1.set_title("V2 Model — NRMSE and R² by Component  (test set)", fontsize=13)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"NRMSE bar chart        → {out_path}")
 
 
 # ============================================================================
@@ -448,7 +666,7 @@ if __name__ == "__main__":
     device = (torch.device(args.device) if args.device
               else torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-    agg, per_sample = evaluate_checkpoint_v2(
+    agg, per_sample, all_pred, all_true = evaluate_checkpoint_v2(
         ckpt_path        = args.model,
         mode             = args.mode,
         holdout_geo      = args.holdout,
@@ -487,4 +705,8 @@ if __name__ == "__main__":
 
     if args.plot:
         config_v2.results_dir.mkdir(parents=True, exist_ok=True)
-        _plot_r2_vs_re(per_sample, config_v2.results_dir / "r2_vs_re_v2.png")
+        _plot_r2_vs_re(per_sample,           config_v2.results_dir / "r2_vs_re_v2.png")
+        _plot_scatter_pred_vs_true(all_pred, all_true, config_v2.results_dir)
+        _plot_r2_heatmap(per_sample,         config_v2.results_dir / "r2_heatmap_v2.png")
+        _plot_error_distributions(all_pred,  all_true, config_v2.results_dir / "error_dist_v2.png")
+        _plot_nrmse_bars(agg,                config_v2.results_dir / "nrmse_bars_v2.png")
