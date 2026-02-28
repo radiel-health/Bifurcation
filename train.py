@@ -68,24 +68,29 @@ def create_model(device):
 
 def compute_loss(y_pred, y_true, reduction='mean'):
     """
-    Compute MSE loss on log-normalized WSS.
-    
-    The WSS values span 7 orders of magnitude (1e-14 to 1e-5), so we use
-    log1p normalization before computing MSE.
-    
-    Args:
-        y_pred: [num_nodes, 2] predicted WSS components (already normalized)
-        y_true: [num_nodes, 2] true WSS components (already normalized)
-        reduction: 'mean' or 'sum'
-        
-    Returns:
-        loss: scalar tensor
+    Compute loss on log-normalized WSS.
+    Automatically handles BNN Quantiles (Pinball Loss) or Mean (MSE Loss).
     """
-    # Both y_pred and y_true are already log1p normalized by dataset
-    # Just compute MSE
-    loss = nn.functional.mse_loss(y_pred, y_true, reduction=reduction)
-    
-    return loss
+    # If TaskHead output_range=True, shape is [2, num_nodes, 3] for [0.025, 0.975] quantiles
+    if y_pred.dim() == 3 and y_pred.shape[0] == 2:
+        quantiles = [0.025, 0.975]
+        loss = 0
+        
+        for i, q in enumerate(quantiles):
+            errors = y_true - y_pred[i]
+            # Pinball (Quantile) Loss formula
+            loss_q = torch.max((q - 1) * errors, q * errors)
+            
+            if reduction == 'mean':
+                loss += loss_q.mean()
+            else:
+                loss += loss_q.sum()
+                
+        return loss
+        
+    # Default to MSE if outputting mean (output_range=False)
+    else:
+        return nn.functional.mse_loss(y_pred, y_true, reduction=reduction)
 
 
 def train_epoch(model, loader, optimizer, device, grad_clip=None, accumulation_steps=16):

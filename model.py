@@ -17,10 +17,9 @@ Key design choices:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GATConv, GPSConv
-from torch_geometric.data import Data, Batch
+from torch_geometric.nn import GATConv, GPSConv
 import torchbnn as bnn
-from math import ceil
+from torch_geometric.utils import degree
 
 class GeometryEncoder(nn.Module):
     """
@@ -109,7 +108,6 @@ class TaskHead(nn.Module):
                  output_range=False, heads=2):
         super().__init__()
         
-        # Ensure dimensionality consistency for multi-head attention
         if hidden_dim % heads != 0:
             raise ValueError(f"hidden_dim ({hidden_dim}) must be divisible by heads ({heads})")
         
@@ -119,15 +117,10 @@ class TaskHead(nn.Module):
         self.monte_carlo_sims = monte_carlo_sims
         self.output_range = output_range
         
-        # NEW: Initial projection to align FiLM output (input_dim) 
-        # with the internal GPS processing dimension (hidden_dim)
         self.feature_align = nn.Linear(input_dim, hidden_dim)
         
-        # GPS layers
         self.convs = nn.ModuleList()
         for _ in range(num_layers):
-            # All layers now operate at hidden_dim (128)
-            # This allows GPSConv internal residuals (h = h + x) to match shapes
             local_conv = GATConv(
                 in_channels=hidden_dim,
                 out_channels=hidden_dim // heads, 
@@ -144,13 +137,11 @@ class TaskHead(nn.Module):
                 attn_type='multihead' 
             ))
         
-        # Layer norms 
         self.norms = nn.ModuleList([
             nn.LayerNorm(hidden_dim)
             for _ in range(num_layers)
         ])
         
-        # MLP head for final prediction
         self.mlp = nn.Sequential(
             nn.Linear(in_features=hidden_dim, out_features=hidden_dim // 2),
             nn.ReLU(),
@@ -158,40 +149,72 @@ class TaskHead(nn.Module):
             bnn.BayesLinear(prior_mu=0, prior_sigma=0.1, in_features=hidden_dim // 2, out_features=output_dim)
         )
 
-    def forward(self, h, edge_index, batch):
-        """
-        Args:
-            h: Node features from FiLM layer [num_nodes, 64]
-            edge_index: Ring topology edges
-            batch: Batch assignment vector
-        """
-        # 1. Project input to hidden_dim (64 -> 128)
-        # This prevents the "Size mismatch" RuntimeError in GPSConv
+    # NEW: The Differentiable PDE Solver
+    def relax_pde(self, y_raw, edge_index, alpha=0.15, num_iters=2):
+        row, col = edge_index
+        deg = degree(col, y_raw.size(0), dtype=y_raw.dtype)
+        deg_inv = 1.0 / deg
+        deg_inv[deg_inv == float('inf')] = 0.0
+        
+        y = y_raw.clone() 
+        for _ in range(num_iters):
+            neighbor_sum = torch.zeros_like(y)
+            neighbor_sum.index_add_(0, col, y[row]) 
+            neighbor_mean = neighbor_sum * deg_inv.unsqueeze(-1)
+            y = y + alpha * (neighbor_mean - y)
+        return y
+
+    # UPDATED: Accept normals and apply physics
+    def forward(self, h, edge_index, batch, normals):
         h = self.feature_align(h)
         
         for i in range(self.num_layers):
             h_in = h
-            
-            # GPSConv performs internal local + global message passing
             h = self.convs[i](h, edge_index, batch)
             h = self.norms[i](h)
             h = F.relu(h)
-            
             if self.training:
                 h = F.dropout(h, p=self.dropout)
-            
-            # Residual connection (now shapes match at 128)
             if i > 0:
                 h = h + h_in
         
-        # Monte Carlo sampling via Bayesian MLP
-        y_preds = [self.mlp(h) for _ in range(self.monte_carlo_sims)]
-        stacked_preds = torch.stack(y_preds)
+        # 1. BNN outputs raw, noisy sample fields
+        y_preds_raw = [self.mlp(h) for _ in range(self.monte_carlo_sims)]
+        
+        y_preds_physical = []
+        for y_raw in y_preds_raw:
+            # 2. Relax each sample (Smooth)
+            y_smoothed = self.relax_pde(y_raw, edge_index, alpha=0.15, num_iters=2)
+            
+            # 3. Tangency Projection (Flatten to wall)
+            dot_product = (y_smoothed * normals).sum(dim=1, keepdim=True) 
+            y_projected = y_smoothed - (dot_product * normals)
+            
+            y_preds_physical.append(y_projected)
+            
+        stacked_preds = torch.stack(y_preds_physical)
         
         if self.output_range:
             return torch.quantile(stacked_preds, torch.tensor([0.025, 0.975], device=h.device), dim=0)
         else:
             return torch.mean(stacked_preds, dim=0)
+
+
+    def forward(self, data):
+        x = data.x                    
+        edge_index = data.edge_index  
+        batch = data.batch            
+        normals = data.normals        # NEW: Extract normals from batch
+        flow_params = data.flow_params 
+        
+        context = self.flow_encoder(flow_params) 
+        h_geom = self.geom_encoder(x, edge_index) 
+        h_fused = self.film(h_geom, context, batch)  
+        
+        # NEW: Pass normals to the TaskHead
+        y_pred = self.task_head(h_fused, edge_index, batch, normals)  
+        
+        return y_pred
 
 class WSSPredictor(nn.Module):
     def __init__(

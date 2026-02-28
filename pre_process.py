@@ -115,6 +115,7 @@ def create_graph(case_path: Path, flow_params: FlowParams):
 
     wall_centres = []
     wall_face_indices = []
+    wall_normals = []  # NEW: List to hold our normal vectors
     
     for _name, info in wall_patches.items():
         for i in range(info["startFace"], info["startFace"] + info["nFaces"]):
@@ -122,7 +123,23 @@ def create_graph(case_path: Path, flow_params: FlowParams):
             wall_centres.append(face_pts.mean(axis=0))
             wall_face_indices.append(i)
             
+            # NEW: Compute Exact Face Normal using Cross Product
+            # Using the first 3 vertices of the face
+            v0 = face_pts[0]
+            v1 = face_pts[1]
+            v2 = face_pts[2]
+            
+            normal = np.cross(v1 - v0, v2 - v0)
+            
+            # Normalize to unit length
+            magnitude = np.linalg.norm(normal)
+            if magnitude > 1e-10:
+                normal = normal / magnitude
+                
+            wall_normals.append(normal)
+            
     wall_centres_arr = np.array(wall_centres, dtype=np.float32)
+    wall_normals_arr = np.array(wall_normals, dtype=np.float32)  # NEW
     n_wall = len(wall_centres_arr)
 
     # 3. Adjacency via shared vertices
@@ -167,19 +184,16 @@ def create_graph(case_path: Path, flow_params: FlowParams):
         wss_all = wss_all[info["nFaces"]:]
         
     wall_wss = np.vstack(wall_wss_parts).astype(np.float32)
-    
-    # Default pressure to 0
-    wall_p = np.zeros(n_wall, dtype=np.float32)
 
-    # 6. Build Original Data Object Structure (without pressure)
+    # 6. Build Original Data Object Structure (Now including normals!)
     return Data(
         x=torch.tensor(wall_centres_arr, dtype=torch.float32),
         edge_index=torch.tensor(edge_index, dtype=torch.long),
         edge_attr=torch.tensor(edge_attr, dtype=torch.float32),
         y=torch.tensor(wall_wss, dtype=torch.float32),
         pos=torch.tensor(wall_centres_arr, dtype=torch.float32),
-        # Just keep Re. We drop angle and size.
-        flow_params=torch.tensor([[flow_params['re']]], dtype=torch.float32),
+        normals=torch.tensor(wall_normals_arr, dtype=torch.float32),  # NEW
+        flow_params=torch.tensor([[flow_params['re'], flow_params['angle'], flow_params['child_size']]], dtype=torch.float32),
         num_nodes=n_wall
     )
 
