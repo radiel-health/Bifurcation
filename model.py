@@ -199,23 +199,6 @@ class TaskHead(nn.Module):
         else:
             return torch.mean(stacked_preds, dim=0)
 
-
-    def forward(self, data):
-        x = data.x                    
-        edge_index = data.edge_index  
-        batch = data.batch            
-        normals = data.normals        # NEW: Extract normals from batch
-        flow_params = data.flow_params 
-        
-        context = self.flow_encoder(flow_params) 
-        h_geom = self.geom_encoder(x, edge_index) 
-        h_fused = self.film(h_geom, context, batch)  
-        
-        # NEW: Pass normals to the TaskHead
-        y_pred = self.task_head(h_fused, edge_index, batch, normals)  
-        
-        return y_pred
-
 class WSSPredictor(nn.Module):
     def __init__(
         self,
