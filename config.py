@@ -81,6 +81,7 @@ class Config:
     
     # Regularization
     dropout_rate = 0.3  # Dropout between GNN layers (0.0 = no dropout)
+    output_range = True
     
     # =========================================================================
     # TRAINING HYPERPARAMETERS

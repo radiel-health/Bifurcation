@@ -49,7 +49,8 @@ def create_model(device):
         num_geom_layers=config.num_geom_layers,
         num_task_layers=config.num_task_layers,
         task_hidden_dim=config.task_hidden_dim,
-        dropout=config.dropout_rate
+        dropout=config.dropout_rate,
+        output_range=config.output_range
     )
     
     return model.to(device)
