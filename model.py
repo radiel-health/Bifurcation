@@ -1,17 +1,5 @@
 """
 GNN model architecture for wall shear stress prediction (3D point cloud).
-
-Two-stream architecture:
-1. Flow Encoder: MLP([Re] → context_dim)
-2. Geometry Encoder: GCN(node_features → hidden_dim)
-3. FiLM Modulation: Context modulates geometry via γ, β
-4. Task Head: GAT + MLP → WSS predictions (3 components: x, y, z)
-
-Key design choices:
-- KNN topology: Each node connects to k-nearest neighbors in 3D space
-- Message passing: 3 GCN layers = 6-hop neighborhood context
-- FiLM fusion: Flow context modulates geometry features multiplicatively
-- Log1p normalization: Handles WSS values spanning orders of magnitude
 """
 
 import torch
