@@ -103,7 +103,7 @@ class GeometryEncoder(nn.Module):
         return h
 
 class TaskHead(nn.Module):
-    def __init__(self, input_dim=64, hidden_dim=128, output_dim=2, 
+    def __init__(self, input_dim=64, hidden_dim=128, output_dim=4, # <-- Now defaults to 4
                  num_layers=5, dropout=0.3, monte_carlo_sims=100, 
                  output_range=False, heads=2):
         super().__init__()
@@ -146,6 +146,7 @@ class TaskHead(nn.Module):
             nn.Linear(in_features=hidden_dim, out_features=hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
+            # This now outputs 4 features (3 for direction, 1 for magnitude)
             bnn.BayesLinear(prior_mu=0, prior_sigma=0.1, in_features=hidden_dim // 2, out_features=output_dim)
         )
 
@@ -178,20 +179,36 @@ class TaskHead(nn.Module):
             if i > 0:
                 h = h + h_in
         
-        # 1. BNN outputs raw, noisy sample fields
+        # 1. BNN outputs raw fields (Shape: [num_nodes, 4])
         y_preds_raw = [self.mlp(h) for _ in range(self.monte_carlo_sims)]
         
         y_preds_physical = []
         for y_raw in y_preds_raw:
-            # 2. Relax each sample (Smooth)
-            y_smoothed = self.relax_pde(y_raw, edge_index, alpha=0.15, num_iters=2)
+            # A. Slice the components
+            v_raw = y_raw[:, :3]        # [num_nodes, 3] The 3D Direction
+            m_raw = y_raw[:, 3:4]       # [num_nodes, 1] The Scalar Magnitude
             
-            # 3. Tangency Projection (Flatten to wall)
-            dot_product = (y_smoothed * normals).sum(dim=1, keepdim=True) 
-            y_projected = y_smoothed - (dot_product * normals)
+            # B. Ensure predicted magnitude is mathematically strictly positive
+            m_pred = F.softplus(m_raw) 
             
-            y_preds_physical.append(y_projected)
+            # C. Relax the direction vector (Smooth it)
+            v_smoothed = self.relax_pde(v_raw, edge_index, alpha=0.15, num_iters=2)
             
+            # D. Tangency Projection (Flatten to wall)
+            dot_product = (v_smoothed * normals).sum(dim=1, keepdim=True) 
+            v_projected = v_smoothed - (dot_product * normals)
+            
+            # E. Calculate current magnitude of the projected vector
+            v_proj_mag = torch.norm(v_projected, dim=1, keepdim=True)
+            
+            # F. MAGNITUDE RESCALING
+            # Multiply vector by (Predicted Mag / Current Mag)
+            # We add 1e-8 to the denominator to prevent division by zero
+            v_final = v_projected * (m_pred / (v_proj_mag + 1e-8))
+            
+            y_preds_physical.append(v_final)
+            
+        # The output is safely back to [num_nodes, 3]!
         stacked_preds = torch.stack(y_preds_physical)
         
         if self.output_range:
@@ -199,12 +216,13 @@ class TaskHead(nn.Module):
         else:
             return torch.mean(stacked_preds, dim=0)
 
+
 class WSSPredictor(nn.Module):
     def __init__(
         self,
-        node_feature_dim=3, # e.g., 3 coords + 3 normals + 1 Re = 7
+        node_feature_dim=7, 
         hidden_dim=64,
-        output_dim=3,
+        output_dim=3, # Target dim from config (3)
         num_geom_layers=3,
         num_task_layers=2,
         task_hidden_dim=128,
@@ -213,7 +231,6 @@ class WSSPredictor(nn.Module):
     ):
         super().__init__()
         
-        # 1. Geometry Encoder (Now handles Re organically)
         self.geom_encoder = GeometryEncoder(
             input_dim=node_feature_dim,
             hidden_dim=hidden_dim,
@@ -221,54 +238,35 @@ class WSSPredictor(nn.Module):
             dropout=dropout
         )
         
-        # 2. Task Head (With the physics relaxation we added!)
         self.task_head = TaskHead(
             input_dim=hidden_dim,
             hidden_dim=task_hidden_dim,
-            output_dim=output_dim,
+            # HARDCODED to 4 here to enable the auxiliary scalar task
+            output_dim=4, 
             num_layers=num_task_layers,
             dropout=dropout,
             output_range=output_range
         )
     
     def forward(self, data):
-        # 1. Extract data
-        x = data.x                    # [num_nodes, 3] (coordinates)
-        normals = data.normals        # [num_nodes, 3]
-        flow_params = data.flow_params # [batch_size, 1] (Just Re now)
+        x = data.x                    
+        normals = data.normals        
+        flow_params = data.flow_params 
         edge_index = data.edge_index  
         batch = data.batch            
         
-        # 2. Broadcast Re to every node in the batch!
-        # This maps the batch-level Re to the individual nodes
-        node_re = flow_params[batch]  # [num_nodes, 1]
-        
-        # 3. Concatenate everything into a single rich feature vector
-        # Features: [x, y, z, nx, ny, nz, Re] (dimension = 7)
+        node_re = flow_params[batch]  
         combined_x = torch.cat([x, normals, node_re], dim=-1)
         
-        # 4. Straight through the network
         h_geom = self.geom_encoder(combined_x, edge_index) 
         y_pred = self.task_head(h_geom, edge_index, batch, normals) 
         
         return y_pred
     
     def predict(self, data, denormalize_fn=None):
-        """
-        Inference with optional denormalization.
-        
-        Args:
-            data: PyG Batch object
-            denormalize_fn: Function to convert normalized predictions back to original scale
-            
-        Returns:
-            y_pred: [num_nodes, output_dim] predictions (denormalized if fn provided)
-        """
         self.eval()
         with torch.no_grad():
             y_pred = self.forward(data)
-            
             if denormalize_fn is not None:
                 y_pred = denormalize_fn(y_pred)
-            
             return y_pred
