@@ -165,7 +165,7 @@ def get_dataloaders(
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True if torch.cuda.is_available() else False,
@@ -173,7 +173,7 @@ def get_dataloaders(
 
     test_loader = DataLoader(
         test_dataset,
-        batch_size=batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True if torch.cuda.is_available() else False,
