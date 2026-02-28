@@ -20,23 +20,18 @@ Key features:
 """
 
 import sys
-from pathlib import Path
 import time
 import json
 import subprocess
-import glob
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch_geometric.loader import DataLoader
-import numpy as np
-from tqdm import tqdm
 
 # Import from local modules
 from config import config
-from dataset import WSSDataset, get_dataloaders
-from model import WSSPredictor, count_parameters, get_model_summary
+from dataset import get_dataloaders
+from model import WSSPredictor
 import torchbnn as bnn
 
 kl_loss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
@@ -45,18 +40,11 @@ kl_weight = 0.025
 def create_model(device):
     """
     Create WSSPredictor model with config settings.
-    
-    Args:
-        device: torch device
-        
-    Returns:
-        model: WSSPredictor instance on device
     """
     model = WSSPredictor(
-        node_feature_dim=config.node_feature_dim,
-        flow_param_dim=config.flow_param_dim,
+        node_feature_dim=config.node_feature_dim, # This is now 7
+        # Note: We deleted flow_param_dim and context_dim from here!
         hidden_dim=config.hidden_dim,
-        context_dim=config.context_dim,
         output_dim=config.target_dim,
         num_geom_layers=config.num_geom_layers,
         num_task_layers=config.num_task_layers,
@@ -395,9 +383,6 @@ def main():
     # Create model
     print("Creating model...")
     model = create_model(device)
-    
-    # Print summary
-    get_model_summary(model)
     
     # Create optimizer
     optimizer = optim.Adam(
