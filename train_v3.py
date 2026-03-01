@@ -163,8 +163,8 @@ def train_v3(
     norm_stats = compute_normalization_stats_v3(train_p)
     save_normalization_stats_v3(norm_stats)
 
-    train_ds = BifurcationWSSDatasetV3(train_p, norm_stats)
-    val_ds   = BifurcationWSSDatasetV3(val_p,   norm_stats)
+    train_ds = BifurcationWSSDatasetV3(train_p, norm_stats, augment=True,  use_lpe=config_v3.use_lpe)
+    val_ds   = BifurcationWSSDatasetV3(val_p,   norm_stats, augment=False, use_lpe=config_v3.use_lpe)
 
     train_loader = DataLoader(train_ds, batch_size=config_v3.batch_size, shuffle=True)
     val_loader   = DataLoader(val_ds,   batch_size=config_v3.batch_size, shuffle=False)

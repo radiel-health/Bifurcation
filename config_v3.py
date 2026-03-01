@@ -72,8 +72,9 @@ class ConfigV3:
     #   6-8:  nx, ny, nz
     #   9:    local_curvature
     #   10-17: |λ_1|...|λ_8|     (absolute Laplacian eigenvectors)
+    use_lpe       = False  # LPE breaks rotation augmentation; physics features already unique
     lpe_k         = 8
-    node_feat_dim = 18   # 10 physics + lpe_k
+    node_feat_dim = 10 + (lpe_k if use_lpe else 0)  # 10 (no LPE) or 18 (with LPE)
 
     # Edge / flow / output dims unchanged
     edge_feat_dim  = 4

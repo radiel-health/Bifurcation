@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -39,6 +40,36 @@ from Bifurcation.dataset import (
 from Bifurcation.dataset_v2 import (
     compute_physics_features_v2,
 )
+
+
+# ============================================================================
+# Rotation augmentation
+# ============================================================================
+
+def rotate_z(data: Data, theta_deg: float) -> Data:
+    """
+    Rotate the mesh around the Z-axis (inlet flow axis) by theta_deg degrees.
+
+    Physically valid: azimuthal symmetry means rotated geometry has identical
+    WSS magnitude distribution — only the X/Y components transform consistently.
+
+    Tensors rotated: xyz coords, surface normals, edge dx/dy/dz, WSS target.
+    Scalars left unchanged: dist_to_junction, arc_length, branch_depth,
+                             curvature, edge distance, LPE eigenvectors.
+    """
+    theta = math.radians(theta_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    R = torch.tensor([
+        [cos_t, -sin_t, 0.0],
+        [sin_t,  cos_t, 0.0],
+        [0.0,    0.0,   1.0],
+    ], dtype=data.x.dtype)
+    data = data.clone()
+    data.x[:, 0:3]         = data.x[:, 0:3]         @ R.t()   # xyz coords
+    data.x[:, 6:9]         = data.x[:, 6:9]         @ R.t()   # nx, ny, nz normals
+    data.edge_attr[:, 1:4] = data.edge_attr[:, 1:4] @ R.t()   # dx, dy, dz
+    data.y                 = data.y                  @ R.t()   # WSS [wx, wy, wz]
+    return data
 
 
 # ============================================================================
@@ -317,10 +348,16 @@ class BifurcationWSSDatasetV3(Dataset):
         self,
         graph_paths: List[Path],
         norm_stats:  Optional[Dict] = None,
+        augment:     bool = False,
+        aug_angles:  tuple = (-15.0, -7.5, 7.5, 15.0),
+        use_lpe:     bool = True,
     ):
         super().__init__()
         self.graph_paths = list(graph_paths)
         self.norm_stats  = norm_stats
+        self.augment     = augment
+        self.aug_angles  = list(aug_angles)
+        self.use_lpe     = use_lpe
 
         if norm_stats is not None:
             self._x_mean = torch.tensor(norm_stats["x_mean"],    dtype=torch.float32)
@@ -329,12 +366,23 @@ class BifurcationWSSDatasetV3(Dataset):
             self._e_std  = torch.tensor(norm_stats["edge_std"],   dtype=torch.float32)
             self._y_mean = torch.tensor(norm_stats["y_mean"],     dtype=torch.float32)
             self._y_std  = torch.tensor(norm_stats["y_std"],      dtype=torch.float32)
+            if not self.use_lpe:
+                self._x_mean = self._x_mean[:10]
+                self._x_std  = self._x_std[:10]
 
     def __len__(self):
         return len(self.graph_paths)
 
     def __getitem__(self, idx) -> Data:
         data = torch.load(self.graph_paths[idx], weights_only=False)
+
+        if self.augment:
+            theta = float(np.random.choice([0.0] + self.aug_angles))
+            if theta != 0.0:
+                data = rotate_z(data, theta)
+
+        if not self.use_lpe:
+            data.x = data.x[:, :10].clone()
 
         if self.norm_stats is not None:
             data.x         = (data.x         - self._x_mean) / self._x_std
