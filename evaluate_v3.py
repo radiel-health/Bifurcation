@@ -124,25 +124,23 @@ def load_model_v3(
 # Data path helpers
 # ============================================================================
 
+# Confirmed no-WSS cases from quality check — avoids loading all files to filter
+_NO_WSS = {
+    'carotid_case_k_001_left', 'carotid_case_k_002_left', 'carotid_case_k_002_right',
+    'carotid_case_k_007_right', 'carotid_case_w_007_left', 'carotid_case_w_007_right',
+    'carotid_case_w_008_left', 'carotid_case_w_008_right', 'carotid_case_w_030_right',
+    'carotid_case_w_040_right',
+}
+
 def get_data_paths_from_dir(data_dir: Path) -> List[Path]:
     """
-    Collect all .pt files from a directory.
-    Looks for:
-      - <data_dir>/*/systolic.pt     (carotid ProcessedData_carotid/)
-      - <data_dir>/*/Re*.pt          (bifurcation ProcessedData_v3/)
-    Skips files where y is None (no WSS label).
+    Collect all labeled .pt files from a directory.
+      - <data_dir>/*/systolic.pt  (carotid)
+      - <data_dir>/*/Re*.pt       (bifurcation)
     """
-    paths = []
-    # Carotid pattern
-    for p in sorted(data_dir.glob("*/systolic.pt")):
-        d = torch.load(p, weights_only=False)
-        if d.y is not None and d.y.shape[0] > 0:
-            paths.append(p)
-    # Bifurcation pattern
-    for p in sorted(data_dir.glob("*/Re*.pt")):
-        d = torch.load(p, weights_only=False)
-        if d.y is not None and d.y.shape[0] > 0:
-            paths.append(p)
+    paths  = [p for p in sorted(data_dir.glob("*/systolic.pt"))
+              if p.parent.name not in _NO_WSS]
+    paths += sorted(data_dir.glob("*/Re*.pt"))
     return paths
 
 
