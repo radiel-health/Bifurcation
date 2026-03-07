@@ -67,10 +67,10 @@ class Config:
     # FEATURE DIMENSIONS
     # =========================================================================
 
-    # Node features: face-centre coordinates (x, y, z)
-    node_feat_dim = 3
+    # Node features: face-centre coordinates + padding (x, y, z, 0)
+    node_feat_dim = 4
 
-    # Edge features: [euclidean_distance, dx, dy, dz]
+    # Edge features: [dist, dx, dy, dz] — computed on-the-fly if not in stored data
     edge_feat_dim = 4
 
     # Flow context: [log10(Re), angle_radians]
