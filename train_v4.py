@@ -166,8 +166,10 @@ def train_v4(
     train_ds = BifurcationWSSDatasetV4(train_p, norm_stats, augment=True)
     val_ds   = BifurcationWSSDatasetV4(val_p,   norm_stats, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=config_v4.batch_size, shuffle=True)
-    val_loader   = DataLoader(val_ds,   batch_size=config_v4.batch_size, shuffle=False)
+    train_loader = DataLoader(train_ds, batch_size=config_v4.batch_size, shuffle=True,
+                              num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader   = DataLoader(val_ds,   batch_size=config_v4.batch_size, shuffle=False,
+                              num_workers=4, pin_memory=True, persistent_workers=True)
 
     print(f"Train: {len(train_ds)}  Val: {len(val_ds)}  Test: {len(test_p)}")
 
