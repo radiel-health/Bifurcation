@@ -273,12 +273,7 @@ class BifurcationWSSPredictorV4(nn.Module):
                 x_c          = x_g[c_local]
 
                 for block in self.conv_blocks:
-                    if self.training:
-                        x_c_out = grad_checkpoint(
-                            block, x_c, c_ei, c_ea, use_reentrant=False
-                        )
-                    else:
-                        x_c_out = block(x_c, c_ei, c_ea)
+                    x_c_out = block(x_c, c_ei, c_ea)
                     x_c = x_c_out + x_c
 
                 h_g[c_local] = x_c
@@ -332,12 +327,7 @@ class BifurcationWSSPredictorV4(nn.Module):
             )
         else:
             for block in self.conv_blocks:
-                if self.training:
-                    x_out = grad_checkpoint(
-                        block, x, edge_index, edge_attr, use_reentrant=False
-                    )
-                else:
-                    x_out = block(x, edge_index, edge_attr)
+                x_out = block(x, edge_index, edge_attr)
                 x = x_out + x
             h_geom = x  # [N, hidden_dim]
 
