@@ -126,7 +126,7 @@ class ConfigV4:
     # TRAINING HYPERPARAMETERS  (unchanged from v3)
     # =========================================================================
 
-    batch_size    = 4
+    batch_size    = 8
     learning_rate = 1e-3
     weight_decay  = 1e-5
     num_epochs    = 500
