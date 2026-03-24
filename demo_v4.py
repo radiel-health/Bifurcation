@@ -262,11 +262,12 @@ def export_paraview(
 # ── interactive UI ────────────────────────────────────────────────────────────
 
 def run_interactive(model, norm_stats, epoch: int):
+    import threading
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
     from matplotlib.widgets import Slider, RadioButtons
 
-    N_PHASES = 10
+    N_PHASES = 4
 
     # Load all available graphs
     print("Loading graphs …")
@@ -307,8 +308,6 @@ def run_interactive(model, norm_stats, epoch: int):
         state["dirty"]  = False
         print("done")
 
-    compute_frames()
-
     # ── figure ────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(14, 7), facecolor="#0d1117")
     fig.suptitle(
@@ -326,20 +325,17 @@ def run_interactive(model, norm_stats, epoch: int):
     ax3d.set_ylabel("y", color="#777", fontsize=7)
     ax3d.set_zlabel("z", color="#777", fontsize=7)
 
-    coords = state["coords"]
-    frames = state["frames"]
+    # Placeholder scatter — real data filled in by background thread
+    _placeholder = raw_graphs[default_angle].pos.numpy()
     sc = ax3d.scatter(
-        coords[:, 0], coords[:, 1], coords[:, 2],
-        c=frames[0], cmap="plasma", s=1.5,
-        vmin=frames.min(), vmax=frames.max(),
+        _placeholder[:, 0], _placeholder[:, 1], _placeholder[:, 2],
+        c=np.zeros(_placeholder.shape[0]), cmap="plasma", s=1.5,
+        vmin=0, vmax=1,
     )
     cbar = fig.colorbar(sc, ax=ax3d, shrink=0.45, pad=0.05)
     cbar.set_label("WSS magnitude (Pa)", color="#aaa", fontsize=7)
     cbar.ax.yaxis.set_tick_params(color="#aaa", labelsize=6, labelcolor="#aaa")
-    ax3d.set_title(
-        f"Re={state['re']:.0f}  Angle={state['angle']}°",
-        color="white", fontsize=10,
-    )
+    ax3d.set_title("Computing…", color="yellow", fontsize=10)
 
     # ── control widgets ───────────────────────────────────────────────────
     ax_re    = fig.add_axes([0.58, 0.80, 0.36, 0.03], facecolor="#1a1a2e")
@@ -405,14 +401,21 @@ def run_interactive(model, norm_stats, epoch: int):
         if new_angle is not None: state["angle"] = int(new_angle)
         ax3d.set_title("Computing…", color="yellow", fontsize=10)
         fig.canvas.draw_idle()
-        compute_frames()
-        f = state["frames"]
-        sc.set_clim(f.min(), f.max())
-        _refresh_info()
-        ax3d.set_title(
-            f"Re={state['re']:.0f}  Angle={state['angle']}°",
-            color="white", fontsize=10,
-        )
+        _launch_compute()
+
+    def _launch_compute():
+        def _bg():
+            compute_frames()
+            f = state["frames"]
+            if f is not None:
+                sc.set_clim(f.min(), f.max())
+                _refresh_info()
+                ax3d.set_title(
+                    f"Re={state['re']:.0f}  Angle={state['angle']}°",
+                    color="white", fontsize=10,
+                )
+                fig.canvas.draw_idle()
+        threading.Thread(target=_bg, daemon=True).start()
 
     sl_re.on_changed(lambda val: _recompute(new_re=val))
     rb_angle.on_clicked(lambda lbl: _recompute(new_angle=int(lbl.replace("°", ""))))
@@ -444,6 +447,7 @@ def run_interactive(model, norm_stats, epoch: int):
     )
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
+    _launch_compute()   # compute in background — window opens immediately
     plt.show()
 
 
@@ -462,6 +466,7 @@ def main():
                         help="Phases for ParaView export (default 20)")
     args = parser.parse_args()
 
+    torch.set_num_threads(max(1, torch.get_num_threads()))
     model, norm_stats, epoch = load_model(args.model)
 
     if args.export_paraview:
