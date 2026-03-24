@@ -120,7 +120,8 @@ def run_phases(
     n_phases:   int = 10,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Batched inference across n_phases evenly-spaced cardiac phases.
+    Sequential inference across n_phases evenly-spaced cardiac phases.
+    (One phase at a time — avoids batching N*n_phases nodes on CPU.)
 
     Returns
     -------
@@ -131,8 +132,9 @@ def run_phases(
     N        = x_norm.shape[0]
     phases_t = torch.linspace(0, 1, n_phases + 1)[:-1]
 
-    graphs = [
-        Data(
+    frames = []
+    for phi in phases_t:
+        g = Data(
             x          = x_norm,
             edge_index = edge_index,
             edge_attr  = e_norm,
@@ -140,15 +142,11 @@ def run_phases(
             angle      = torch.tensor([float(angle_deg)], dtype=torch.float32),
             phase      = phi.unsqueeze(0).float(),
         )
-        for phi in phases_t
-    ]
-    batch  = Batch.from_data_list(graphs)
-    y_norm = model(batch)                              # [n_phases * N, 3]
-    y_phys = denormalize_wss_v4(y_norm, norm_stats)    # [n_phases * N, 3]
-    y_phys = y_phys.view(n_phases, N, 3)               # [n_phases, N, 3]
-    wss_mag = torch.norm(y_phys, dim=2).numpy()         # [n_phases, N]
+        y_norm = model(g)                                    # [N, 3]
+        y_phys = denormalize_wss_v4(y_norm, norm_stats)     # [N, 3]
+        frames.append(torch.norm(y_phys, dim=1).numpy())    # [N]
 
-    return wss_mag, phases_t.numpy()
+    return np.stack(frames), phases_t.numpy()  # [n_phases, N], [n_phases]
 
 
 # ── ParaView export ───────────────────────────────────────────────────────────
@@ -303,7 +301,7 @@ def run_interactive(model, norm_stats, epoch: int):
             model, raw, norm_stats,
             re_val=state["re"], angle_deg=state["angle"], n_phases=N_PHASES,
         )
-        state["coords"] = raw.x[:, :3].numpy()
+        state["coords"] = raw.pos.numpy()  # physical wall centroid coords
         state["frames"] = wss_mag
         state["phases"] = phases
         state["dirty"]  = False
