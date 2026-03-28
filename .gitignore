@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Large data directories (download separately or regenerate)
+ProcessedData/
+ProcessedData_v2/
+ProcessedData_v3/
+ProcessedData_v4/
+ProcessedData_carotid/
+ProcessedData_carotid.zip
+
+# Old model weights (v1-v3 not needed on main)
+Models/best_model.pt
+Models_v2/
+Models_v3/
+
+# Inference outputs and evaluation results
+predictions/
+predictions_v2/
+predictions_v3/
+predictions_v4/
+predictions_carotid/
+predictions_carotid_lite/
+results/
+results_v2/
+results_v3/
+results_v3_carotid/
+results_v4/
+vtk_exports/
+figures/
+
+# Logs
+*.log
+
+# Misc
+.DS_Store
+Thumbs.db
